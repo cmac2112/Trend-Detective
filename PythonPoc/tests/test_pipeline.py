@@ -96,3 +96,164 @@ def test_build_cube_adds_older_months_and_coverage(tmp_path, monkeypatch):
     assert len(times) == 18 and times.is_monotonic_increasing
     assert data.coverage(var, "2021-01", "2022-06")["missing_months"] == 0
     assert not (data.CUBE_DIR / "soil_moisture.zarr.rebuild").exists()
+
+
+def test_local_tile_preferred_else_cloud(tmp_path, monkeypatch):
+    from earthtrends import analyze as A, data, local, catalog, cloud
+    monkeypatch.setattr(data, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(data, "CUBE_DIR", tmp_path / "cubes")
+    var = catalog.get("t2m")
+    cube = make_cube(0.05)
+    tile = cube.sel(lat=slice(34, 38), lon=slice(-116, -112), time=slice("2001-01", "2024-12"))
+    local.save_tile(tile, var, "test_region")
+
+    calls = []
+    def fake_cloud(var, geom, start, end, progress=None):
+        calls.append((start, end))
+        return cube.sel(time=slice(start, end))
+    monkeypatch.setattr(cloud, "open_region", fake_cloud)
+
+    # inside the saved tile and period -> local, no cloud call
+    res = A.analyze("t2m", POLY, start="2001-01", end="2024-12")
+    assert res["data_source"]["type"] == "local" and calls == []
+    assert A.plan("t2m", POLY, "2001-01", "2024-12")["source"] == "cache"  # just analyzed
+    from earthtrends import cache
+    cache.RESULTS.clear()
+    assert A.plan("t2m", POLY, "2001-01", "2024-12")["source"] == "local"
+    # region outside the tile -> cloud
+    far = {"type": "Polygon", "coordinates": [[[10, 50], [12, 50], [12, 52], [10, 52], [10, 50]]]}
+    res = A.analyze("t2m", far, start="2001-01", end="2024-12")
+    assert res["data_source"]["type"] == "cloud" and calls == [("2001-01", "2024-12")]
+    # period beyond the tile -> cloud
+    p = A.plan("t2m", POLY, "1995-01", "2024-12")
+    assert p["source"] == "cloud" and p["estimated_seconds"] > 10
+    # local-only request that local can't satisfy -> clear error
+    # (a cached result would be fine: "local" means no network, and the cache is in memory)
+    cache.RESULTS.clear()
+    with pytest.raises(Exception, match="No local"):
+        A.analyze("t2m", far, start="2001-01", end="2024-12", source="local")
+    assert local.tile_covers(var, "test_region", load_polygon(POLY), "2001-01", "2024-12")
+
+
+@pytest.fixture
+def fake_cloud(tmp_path, monkeypatch):
+    """Point data at an empty folder and replace NASA with a synthetic cube."""
+    from earthtrends import cloud, data
+    monkeypatch.setattr(data, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(data, "CUBE_DIR", tmp_path / "cubes")
+    cube = make_cube(0.05)
+    calls = []
+    def fake(var, geom, start, end, progress=None):
+        calls.append(geom.bounds)
+        if progress:
+            progress(1, 1)
+        sel = cube.sel(time=slice(start, end))
+        return sel.where(False) if geom.bounds[1] >= 70 else sel  # north of 70 = "ocean", no data
+    monkeypatch.setattr(cloud, "open_region", fake)
+    return calls
+
+
+def test_cache_makes_repeat_instant_and_matches(fake_cloud):
+    from earthtrends import analyze as A
+    first = A.analyze("t2m", POLY, start="2001-01", end="2024-12")
+    assert first["data_source"] == {"type": "cloud", "description": "streamed from NASA Earthdata Cloud", "cached": False}
+    assert A.plan("t2m", POLY, "2001-01", "2024-12")["source"] == "cache"
+    # same shape sent again with tiny float noise and a different start vertex -> still a hit
+    noisy = {"type": "Polygon", "coordinates": [[[-113, 35.000001], [-113, 37], [-115, 37], [-115, 35], [-113, 35.000001]]]}
+    second = A.analyze("t2m", noisy, start="2001-01", end="2024-12")
+    assert second["data_source"]["cached"] is True and len(fake_cloud) == 1
+    assert second["stats"] == first["stats"] and second["series"] == first["series"]
+    # different period -> miss; source="cloud" -> bypass
+    A.analyze("t2m", POLY, start="2005-01", end="2024-12")
+    A.analyze("t2m", POLY, start="2001-01", end="2024-12", source="cloud")
+    assert len(fake_cloud) == 3
+
+
+def test_cache_is_bounded():
+    from earthtrends.cache import ResultCache
+    c = ResultCache(max_entries=2)
+    for k in "abc":
+        c.put(k, {"data_source": {"type": "cloud"}})
+    assert not c.contains("a") and c.contains("b") and c.contains("c")
+
+
+def test_compare_regions(fake_cloud):
+    from earthtrends import analyze as A
+    ocean_only = {"type": "Polygon", "coordinates": [[[0, 70], [10, 70], [10, 80], [0, 80], [0, 70]]]}  # NaN zone
+    progress = []
+    res = A.compare("t2m", [
+        {"name": "A", "region": POLY},
+        {"name": "B", "region": {"type": "Polygon", "coordinates": [[[10, 40], [12, 40], [12, 42], [10, 42], [10, 40]]]}},
+        {"name": "C", "region": ocean_only},
+    ], start="2001-01", end="2024-12", progress=lambda d, t: progress.append((d, t)))
+    assert [r["name"] for r in res["regions"]] == ["A", "B", "C"]
+    assert "error" in res["regions"][2] and res["summary"]["analyzed"] == 2
+    assert set(res["summary"]["significant"]) == {"A", "B"}
+    assert progress[-1][0] == progress[-1][1] == 3 * 288  # progress spans all cloud regions
+    with pytest.raises(ValueError):
+        A.compare("t2m", [{"name": "A", "region": POLY}])
+
+
+@pytest.mark.parametrize("name,expected", [
+    ("AIRS.2003.12.01.L3.RetStd_IR031.v7.0.3.0.G20218141731.hdf", "2003-12"),   # AIRS dotted date
+    ("MOD13C2.A2010182.061.2021169014610.hdf", "2010-07"),                      # MODIS day-of-year
+    ("MOD13C2.A2012183.061.2021169014610.hdf", "2012-07"),                      # leap year
+])
+def test_more_filename_dates(name, expected):
+    assert month_from_filename(Path(name)).strftime("%Y-%m") == expected
+
+
+def test_read_field_mean_and_paths(tmp_path):
+    """AIRS-style: day/night components in different groups, averaged, ignoring a missing pass."""
+    import netCDF4
+    from earthtrends import catalog, cloud
+    f = tmp_path / "airs.nc"
+    with netCDF4.Dataset(f, "w") as nc:
+        for grp, name, vals in [("ascending", "SurfAirTemp_A", [[280.0, -9999.0]]),
+                                ("descending", "SurfAirTemp_D", [[270.0, 290.0]])]:
+            g = nc.createGroup(grp).createGroup("Data_Fields")
+            g.createDimension("y", 1); g.createDimension("x", 2)
+            v = g.createVariable(name, "f4", ("y", "x"), fill_value=-9999.0)
+            v[:] = np.array(vals, dtype="f4")
+    with netCDF4.Dataset(f) as nc:
+        out = cloud._read_field(nc, catalog.get("airs_surface_temp"))
+    assert out[0, 0] == pytest.approx(275 - 273.15, abs=1e-3)  # mean of day and night (float32)
+    assert out[0, 1] == pytest.approx(290 - 273.15, abs=1e-3)  # day missing -> night only
+
+
+def test_single_file_dataset(tmp_path, monkeypatch):
+    """OMI-style: whole record in one file with 'Oct2004'-style month labels."""
+    import netCDF4
+    from earthtrends import catalog, cloud, data
+    monkeypatch.setattr(data, "DATA_DIR", tmp_path)
+    folder = tmp_path / "datasets" / "TrCO3_Monthly_OMIMLS"
+    folder.mkdir(parents=True)
+    months = ["Oct2004", "Nov2004", "Dec2004", "Jan2005"]
+    with netCDF4.Dataset(folder / "tco.nc", "w") as nc:
+        nc.createDimension("Longitude", 360); nc.createDimension("Latitude", 180); nc.createDimension("Time", 4)
+        nc.createVariable("Longitude", "f4", ("Longitude",))[:] = np.arange(-179.5, 180, 1.0)
+        nc.createVariable("Latitude", "f4", ("Latitude",))[:] = np.arange(-89.5, 90, 1.0)
+        t = nc.createVariable("Time", str, ("Time",))
+        for i, m in enumerate(months):
+            t[i] = m
+        o3 = nc.createVariable("TropoO3", "f4", ("Time", "Latitude", "Longitude"))
+        o3[:] = np.stack([np.full((180, 360), 30.0 + i, dtype="f4") for i in range(4)])
+    geom = load_polygon(POLY)
+    cube = cloud.open_region(catalog.get("tropospheric_ozone"), geom, "2004-11", "2005-01")
+    assert [pd.Timestamp(t).strftime("%Y-%m") for t in cube.time.values] == ["2004-11", "2004-12", "2005-01"]
+    series, _ = polygon_mean(cube, geom)
+    assert list(series.round(3)) == [31.0, 32.0, 33.0]
+
+
+def test_discontinued_record_months():
+    """Datasets that stopped (e.g. OCO-2 GEOS CO2, 2015-01..2022-02) clamp both ends."""
+    from earthtrends import catalog
+    from earthtrends.analyze import default_range, plan
+    co2 = catalog.get("co2")
+    months = co2.available_months("2001-01", "2024-12")
+    assert months[0].strftime("%Y-%m") == "2015-01" and months[-1].strftime("%Y-%m") == "2022-02"
+    assert len(months) == 86
+    assert default_range(co2) == ("2015-01", "2022-02")
+    assert co2.available_months("2023-01", "2024-12") == []
+    with pytest.raises(ValueError, match="only has data from 2015-01 to 2022-02"):
+        plan("co2", POLY, "2023-01", "2024-12")

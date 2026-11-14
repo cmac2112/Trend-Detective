@@ -3,5 +3,6 @@
 
 fastapi>=0.115
 uvicorn[standard]>=0.30
+python-dotenv>=1.0     # loads ANTHROPIC_API_KEY from TrendApi/.env
 httpx>=0.27
 pytest>=8

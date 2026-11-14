@@ -7,33 +7,150 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from . import catalog, data, region, stats
+from . import cache, catalog, cloud, data, local, region, stats
 
 
-def analyze(var_key: str, polygon, da=None, start: str | None = None, end: str | None = None) -> dict:
-    """Core function the web API calls. `polygon` is GeoJSON (path, str, or dict).
-    Optional start/end ("YYYY-MM") limit the period analyzed."""
+def default_range(var: catalog.Variable) -> tuple[str, str]:
+    """2001 (or the dataset's first month) through December of last year."""
+    start = max(var.first_month, "2001-01")
+    end = f"{pd.Timestamp.now().year - 1}-12"
+    if var.last_month and var.last_month < end:
+        end = var.last_month  # discontinued record
+    return start, end
+
+
+MAX_COMPARE_REGIONS = 5
+
+
+def plan(var_key: str, polygon, start: str | None = None, end: str | None = None,
+         source: str = "auto") -> dict:
+    """Where an analysis would read its data from (cache, local or cloud), without reading it."""
     var = catalog.get(var_key)
     geom = region.load_polygon(polygon)
-    if da is None:
-        da = data.open_cube(var)
-    if start or end:
-        da = da.sel(time=slice(start, end))
+    d0, d1 = default_range(var)
+    start, end = start or d0, end or d1
+    months = len(var.available_months(start, end))
+    if months == 0:
+        span = f"{var.first_month} to {var.last_month or 'today'}"
+        raise ValueError(f"{var.name} only has data from {span}; choose dates in that range.")
+    base = {"start": start, "end": end, "months": months}
+    if source != "cloud" and cache.RESULTS.contains(cache.key(var.key, geom, start, end)):
+        return {"source": "cache", "description": "already analyzed recently", **base, "estimated_seconds": 0}
+    found = local.find(var, geom, start, end) if source != "cloud" else None
+    if found:
+        return {"source": "local", "description": found[1], **base, "estimated_seconds": 1}
+    if source == "local":
+        raise data.DataError(f"No local {var.name.lower()} data covers this region and period.")
+    return {"source": "cloud", "description": "streamed from NASA Earthdata Cloud", **base,
+            "estimated_seconds": round(3 + months * var.cloud_seconds_per_month)}
+
+
+def analyze(var_key: str, polygon, da=None, start: str | None = None, end: str | None = None,
+            source: str = "auto", progress: data.Progress | None = None) -> dict:
+    """Core function the web API calls. `polygon` is GeoJSON (path, str, or dict).
+
+    Order of preference (source="auto"):
+      1. a cached result for the same variable, shape and period (instant)
+      2. local storage that covers the region and every requested month
+      3. streaming from NASA's cloud (not stored; the result is cached)
+    source="local" never uses the network (cached or stored data only);
+    source="cloud" always streams fresh data.
+    Pass `da` to analyze an in-memory cube directly (tests; not cached)."""
+    var = catalog.get(var_key)
+    geom = region.load_polygon(polygon)
+    cache_key = None
+    if da is not None:
+        if start or end:
+            da = da.sel(time=slice(start, end))
+        origin = {"type": "provided", "description": "data passed in directly"}
+    else:
+        d0, d1 = default_range(var)
+        start, end = start or d0, end or d1
+        cache_key = cache.key(var.key, geom, start, end)
+        if source != "cloud":
+            hit = cache.RESULTS.get(cache_key)
+            if hit is not None:
+                return hit
+        found = local.find(var, geom, start, end) if source in ("auto", "local") else None
+        if found:
+            da = found[0].sel(time=slice(start, end))
+            origin = {"type": "local", "description": found[1]}
+        elif source == "local":
+            raise data.DataError(f"No local {var.name.lower()} data covers this region and period.")
+        else:
+            da = cloud.open_region(var, geom, start, end, progress=progress)
+            origin = {"type": "cloud", "description": "streamed from NASA Earthdata Cloud"}
     series, info = region.polygon_mean(da, geom)
     if series.empty:
         raise ValueError(f"No {var.name.lower()} data inside this region "
                          "(land-only variables like soil moisture have no data over the ocean).")
     anomalies, _ = stats.deseasonalize(series)
     result = stats.trend_stats(series, units=var.units, percent=var.percent_meaningful)
-    return {
+    out = {
         "variable": {"key": var.key, "name": var.name, "units": var.units,
                      "definition": var.definition, "source": f"{var.collection} v{var.version}"},
         "region": info,
+        "data_source": {**origin, "cached": False},
         "stats": result,
         "series": [
             {"date": d.strftime("%Y-%m"), "value": float(v), "anomaly": float(a)}
             for d, v, a in zip(series.index, series.to_numpy(), anomalies.to_numpy())
         ],
+    }
+    if cache_key:
+        cache.RESULTS.put(cache_key, out)
+    return out
+
+
+def compare(var_key: str, regions: list[dict], start: str | None = None, end: str | None = None,
+            source: str = "auto", progress: data.Progress | None = None) -> dict:
+    """Analyze one variable over 2-5 regions for the same period.
+
+    `regions` is a list of {"name": str, "region": GeoJSON}. Regions are analyzed one
+    after another (each cloud region already uses 16 parallel requests to NASA), and
+    progress is reported across all of them. A region that fails (e.g. ocean for a
+    land-only variable) gets an `error` entry instead of stopping the comparison."""
+    var = catalog.get(var_key)
+    if not 2 <= len(regions) <= MAX_COMPARE_REGIONS:
+        raise ValueError(f"Compare needs 2 to {MAX_COMPARE_REGIONS} regions, got {len(regions)}.")
+    d0, d1 = default_range(var)
+    start, end = start or d0, end or d1
+
+    plans = [plan(var.key, r["region"], start, end, source=source) for r in regions]
+    total = sum(p["months"] for p in plans if p["source"] == "cloud")
+    offset = 0
+    items = []
+    for r, p in zip(regions, plans):
+        def sub_progress(done: int, n: int, base=offset) -> None:
+            if progress and total:
+                progress(min(base + done, total), total)
+        try:
+            res = analyze(var.key, r["region"], start=start, end=end, source=source, progress=sub_progress)
+            res.pop("variable", None)
+            items.append({"name": r["name"], **res})
+        except (data.DataError, ValueError) as e:
+            items.append({"name": r["name"], "error": str(e)})
+        if p["source"] == "cloud":
+            offset += p["months"]
+            if progress and total:
+                progress(offset, total)
+
+    ok = [i for i in items if "error" not in i]
+    if not ok:
+        raise ValueError("None of the regions could be analyzed: " + "; ".join(i["error"] for i in items))
+    fastest = max(ok, key=lambda i: abs(i["stats"]["linear"]["slope_per_decade"]))
+    return {
+        "variable": {"key": var.key, "name": var.name, "units": var.units,
+                     "definition": var.definition, "source": f"{var.collection} v{var.version}"},
+        "start": start,
+        "end": end,
+        "regions": items,
+        "summary": {
+            "analyzed": len(ok),
+            "significant": [i["name"] for i in ok if i["stats"]["significant"]],
+            "fastest_change": {"name": fastest["name"],
+                               "slope_per_decade": fastest["stats"]["linear"]["slope_per_decade"]},
+        },
     }
 
 

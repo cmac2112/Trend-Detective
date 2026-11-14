@@ -19,6 +19,8 @@ dependencies = [
     "shapely>=2.0",
     "pymannkendall>=1.4.3",
     "matplotlib>=3.8",
+    "scikit-learn>=1.5",   # random forest for cause analysis
+    "anthropic>=2.0",      # AI explanations (optional at runtime: needs ANTHROPIC_API_KEY)
 ]
 
 [tool.setuptools]

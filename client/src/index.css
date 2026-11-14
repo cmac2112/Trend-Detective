@@ -11,6 +11,9 @@
   --axis: #c3c2b7;
   --series-1: #2a78d6;
   --series-2: #eb6834;
+  --series-3: #1baf7a;
+  --series-4: #eda100;
+  --series-5: #e87ba4;
   --accent: #2a78d6;
   --accent-ink: #ffffff;
   --good: #0ca30c;
@@ -39,6 +42,9 @@
     --axis: #383835;
     --series-1: #3987e5;
     --series-2: #d95926;
+    --series-3: #199e70;
+    --series-4: #c98500;
+    --series-5: #d55181;
     --accent: #3987e5;
     --good-text: #0ca30c;
     --neutral-bg: #383835;
@@ -395,4 +401,188 @@ th {
   position: sticky;
   top: 0;
   background: var(--surface-raised);
+}
+
+/* ---------- data source + streaming progress */
+.progress-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 14px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.progress-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.source-pill {
+  display: inline-block;
+  font-size: 0.8rem;
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  color: var(--text-secondary);
+  background: var(--surface-raised);
+}
+
+/* ---------- regions + comparison */
+.swatch {
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  border-radius: 3px;
+  margin-right: 8px;
+  vertical-align: -1px;
+  flex: none;
+}
+.region-list {
+  list-style: none;
+  margin: 8px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.region-list li {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.region-list input {
+  padding: 5px 8px;
+  font-size: 0.9rem;
+}
+.region-letter {
+  font-weight: 600;
+  font-size: 0.85rem;
+  color: var(--text-secondary);
+  width: 12px;
+}
+.icon-btn {
+  background: transparent;
+  color: var(--text-secondary);
+  border: 1px solid var(--border);
+  padding: 4px 8px;
+  line-height: 1;
+}
+.icon-btn:hover {
+  background: var(--neutral-bg);
+}
+.region-actions {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-top: 8px;
+}
+button.small {
+  padding: 4px 10px;
+  font-size: 0.8rem;
+}
+.compare-table {
+  max-height: none;
+  background: var(--surface);
+}
+.compare-table td,
+.compare-table th {
+  padding: 8px 10px;
+  white-space: nowrap;
+}
+.compare-table .badge {
+  font-size: 0.75rem;
+  padding: 1px 8px;
+}
+/* Leaflet tooltip used as a permanent region label on the map */
+.leaflet-tooltip.region-label {
+  background: rgba(255, 255, 255, 0.92);
+  border: 1px solid rgba(0, 0, 0, 0.15);
+  color: #0b0b0b;
+  font: 600 12px system-ui, -apple-system, "Segoe UI", sans-serif;
+  padding: 2px 6px;
+  box-shadow: none;
+}
+.leaflet-tooltip.region-label::before {
+  display: none;
+}
+
+/* ---------- cause analysis */
+.drivers {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  border-top: 1px solid var(--border);
+  padding-top: 16px;
+}
+.drivers-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+.section-title {
+  font-size: 1.1rem;
+  margin: 0 0 4px;
+}
+.ai-card {
+  background: var(--surface);
+  border: 1px solid var(--accent);
+  border-radius: 12px;
+  padding: 14px 16px;
+}
+.ai-label {
+  color: var(--text-secondary);
+  margin-bottom: 6px;
+}
+.ai-headline {
+  font-size: 1.05rem;
+  font-weight: 600;
+}
+.ai-causes {
+  padding-left: 20px;
+  margin: 8px 0;
+}
+.ai-causes li {
+  margin-bottom: 8px;
+}
+.ai-causes p {
+  margin: 2px 0 0;
+}
+.ai-cause-head {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.ai-cause-head .badge,
+.drivers .badge {
+  font-size: 0.75rem;
+  padding: 1px 8px;
+}
+.tiny {
+  font-size: 0.75rem;
+}
+.r-bar {
+  display: inline-block;
+  width: 48px;
+  height: 6px;
+  background: var(--grid);
+  border-radius: 3px;
+  margin-right: 6px;
+  vertical-align: middle;
+  overflow: hidden;
+}
+.r-bar span {
+  display: block;
+  height: 100%;
+  background: var(--series-1);
+  border-radius: 3px;
+}
+table caption {
+  text-align: left;
+  padding: 8px 10px 4px;
 }

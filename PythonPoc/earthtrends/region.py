@@ -19,7 +19,9 @@ def load_polygon(source: str | Path | dict) -> BaseGeometry:
         gj = source
     else:
         text = str(source)
-        gj = json.loads(text) if text.lstrip().startswith("{") else json.loads(Path(text).read_text())
+        # utf-8-sig also accepts files saved with a byte-order mark (PowerShell, Notepad)
+        gj = json.loads(text) if text.lstrip().startswith("{") else \
+            json.loads(Path(text).read_text(encoding="utf-8-sig"))
 
     if gj.get("type") == "FeatureCollection":
         geoms = [shape(f["geometry"]) for f in gj["features"]]

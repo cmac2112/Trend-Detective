@@ -61,7 +61,14 @@ export default function Results({ result }: { result: AnalyzeResult }) {
       <TrendCharts result={result} />
 
       <p className="muted small">
-        {region.cells_with_data} grid cells averaged · {s.n_months} months · source {v.source}
+        <span className={`source-pill ${result.data_source.type}`}>
+          {result.data_source.cached
+            ? "⚡ Cached result"
+            : result.data_source.type === "cloud"
+              ? "☁ NASA Earthdata Cloud"
+              : "💾 Stored on this computer"}
+        </span>{" "}
+        {region.cells_with_data} grid cells averaged · {s.n_months} months · dataset {v.source}
       </p>
     </section>
   );

@@ -1,8 +1,29 @@
 # Trend Detective API
 
 FastAPI service that wraps the `earthtrends` core library (in `../PythonPoc`).
-It reads the local data cubes built by the PythonPoc `fetch` command, so serving
-requests needs no NASA login or network access.
+
+**Where the data comes from** (checked in this order):
+- **Cache**: the same variable, region shape and period analyzed recently. Instant. Held in
+  memory (up to 512 results, least recently used dropped first) and cleared on restart.
+- **Stored on this computer** when a local copy covers the region and period. The demo
+  regions are saved with `python -m earthtrends prepare-examples` (a few MB), so
+  presentations work offline and instantly.
+- **Otherwise, streamed from NASA Earthdata Cloud** for that one analysis and never saved.
+  NASA's cloud OPeNDAP service cuts out just the cells around the polygon, so 24 years
+  takes about 30 seconds and a few MB of network traffic. Disk use doesn't grow no matter
+  how many people use the app.
+
+Streaming needs NASA Earthdata credentials on the server (`EARTHDATA_TOKEN` or `~/_netrc`).
+Local data works without them.
+
+**AI explanations** (part of the cause analysis) need an Anthropic API key. Everything else
+works without one.
+1. Copy `TrendApi/.env.example` to `TrendApi/.env`.
+2. Put your key after `ANTHROPIC_API_KEY=`.
+3. Restart the API: stop uvicorn and start it again, because `--reload` doesn't watch `.env`.
+
+`.env` is git-ignored, and an environment variable that's already set takes priority over
+the file. Check `GET /health`: `ai_enabled` should be `true`.
 
 ## Setup
 
@@ -13,19 +34,23 @@ python -m venv .venv
 pip install -r requirements.txt     # also installs ../PythonPoc as an editable library
 ```
 
-Data comes from `../PythonPoc/data` by default. To use a different folder, set the
-`EARTHTRENDS_DATA_DIR` environment variable. To download data:
+Local data lives in `../PythonPoc/data` by default; set `EARTHTRENDS_DATA_DIR` to change it.
+To save the demo regions locally (once, about 5 minutes):
 
 ```powershell
 cd ..\PythonPoc
-python -m earthtrends fetch t2m
+python -m earthtrends prepare-examples
 ```
 
 ## Run
 
 ```powershell
-uvicorn app.main:app --reload
+uvicorn app.main:app --reload --reload-dir app --reload-dir ../PythonPoc/earthtrends
 ```
+
+Plain `--reload` only watches the `TrendApi/` folder. Most of the science lives in
+`../PythonPoc/earthtrends`, so without the second `--reload-dir`, changes there (for
+example new variables in `catalog.py`) don't reach the running server until you restart it.
 
 - API: http://127.0.0.1:8000
 - Interactive docs (try requests in the browser): http://127.0.0.1:8000/docs
@@ -39,26 +64,42 @@ uvicorn app.main:app --reload
 | GET | `/variables/{key}` | Details for one variable |
 | GET | `/examples` | Lists the ready-made demo regions |
 | GET | `/examples/{name}` | Returns one demo region's polygon |
-| POST | `/analyze` | **The main endpoint**: time series + trend analysis for a variable over a polygon |
-| GET | `/variables/{key}/coverage?start=&end=` | How much of a date range is downloaded, and the estimated size of the rest |
-| POST | `/variables/{key}/fetch` | Download the missing months in the background (size-limited) |
-| GET | `/jobs/{id}` | Progress of a download |
+| POST | `/plan` | Says whether an analysis would use local data or NASA's cloud, and roughly how long it takes |
+| POST | `/analyze` | **The main endpoint**: time series + trend analysis for a variable over a polygon (waits for the result) |
+| POST | `/analyze/jobs` | The same analysis in the background, for slow cloud requests |
+| POST | `/compare/plan` | Like `/plan`, for 2–5 regions at once |
+| POST | `/compare` | Analyze one variable over 2–5 regions for the same period (waits for the result) |
+| POST | `/compare/jobs` | The same comparison in the background |
+| GET | `/jobs/{id}` | Progress of a background analysis or comparison, and its result when done |
+| POST | `/drivers` | **Why is it changing?** Compares the variable with its related variables and has Claude explain the evidence |
+| POST | `/drivers/jobs` | The same cause analysis in the background, with progress |
+| POST | `/cache/clear` | Forget cached results (e.g. to show a live NASA stream in a demo) |
 
 A typical frontend flow:
 1. Call `GET /variables` to fill the variable picker.
 2. The user draws a polygon on the map, or picks a demo region from `GET /examples/{name}`.
-3. Send both to `POST /analyze`.
+3. `POST /plan`:
+   - if `source` is `"cache"` or `"local"`, call `POST /analyze` (instant)
+   - if it's `"cloud"`, call `POST /analyze/jobs`, then poll `GET /jobs/{id}` every second
+     to show progress
 4. Chart the `series` and show the `stats`.
+
+For Postman or curl, `POST /analyze` works for both. A cloud request just takes about 30
+seconds to respond.
 
 ---
 
 ### GET /health
 
-Confirms the API is up and shows which data folder it's reading from. Use it first when
-something isn't working: if `data_dir` is wrong, every variable will show as not downloaded.
+Confirms the API is up, and shows:
+- which data folder it reads local data from
+- whether it can reach NASA's cloud (`cloud_enabled` is `false` when the server has no
+  Earthdata credentials)
+- cache statistics
 
 ```json
-{ "status": "ok", "data_dir": "C:\\...\\Trend-Detective\\PythonPoc\\data" }
+{ "status": "ok", "data_dir": "C:\\...\\Trend-Detective\\PythonPoc\\data", "cloud_enabled": true,
+  "cache": { "entries": 3, "max_entries": 512, "hits": 5, "misses": 3 } }
 ```
 
 ---
@@ -68,11 +109,9 @@ something isn't working: if `data_dir` is wrong, every variable will show as not
 Returns every variable with:
 - a plain-language definition, to show to users
 - its units and NASA data source
-- whether it has been downloaded (`available`)
-- the date range you can analyze
+- what's stored locally
 
-Variables with `available: false` exist in the catalog but need `python -m earthtrends fetch <key>`
-first. Calling `/analyze` with one returns a 409 error.
+Every variable can be analyzed anywhere: anything not stored locally streams from NASA.
 
 ```json
 [
@@ -83,10 +122,9 @@ first. Calling `/analyze` with one returns a 409 error.
     "definition": "The temperature of the air about 2 meters above the ground, the height a weather station thermometer sits at. From the MERRA-2 reanalysis model.",
     "source": "M2TMNXSLV v5.12.4",
     "related": ["precip", "soil_moisture", "evapotranspiration"],
-    "available": true,
-    "start": "2001-01",
-    "end": "2024-12",
-    "n_months": 288
+    "data_starts": "1980-01",
+    "local_global": { "start": "1999-01", "end": "2024-12", "n_months": 312 },
+    "local_examples": ["amazon_rondonia", "barents_sea", "lake_mead"]
   },
   ...
 ]
@@ -96,7 +134,9 @@ first. Calling `/analyze` with one returns a 409 error.
 |---|---|
 | `key` | ID to send as `variable` in `/analyze` |
 | `related` | Variables physically linked to this one (planned use: cause analysis) |
-| `start`, `end`, `n_months` | Downloaded date range; `null` / `0` if not downloaded |
+| `data_starts` | First month NASA has data for |
+| `local_global` | Whole-world data stored locally (from the optional `earthtrends fetch` command), or `null` |
+| `local_examples` | Demo regions stored locally for this variable |
 
 ### GET /variables/{key}
 
@@ -150,6 +190,7 @@ The core of the tool. Given a variable and a region, it:
   "region": { "type": "Polygon", "coordinates": [[[20,72],[55,72],[55,80],[20,80],[20,72]]] },
   "start": "2001-01",
   "end": "2024-12",
+  "source": "auto",
   "include_series": true
 }
 ```
@@ -158,7 +199,8 @@ The core of the tool. Given a variable and a region, it:
 |---|---|---|
 | `variable` | yes | A `key` from `/variables` |
 | `region` | yes | GeoJSON Polygon or MultiPolygon, a Feature, or a FeatureCollection. Coordinates are **[longitude, latitude]**, which is the GeoJSON standard (note: Leaflet uses lat/lng) |
-| `start`, `end` | no | Limit the period, as `YYYY-MM`. Leave them out to use all downloaded data |
+| `start`, `end` | no | The period, as `YYYY-MM`. Defaults: `2001-01` to December of last year |
+| `source` | no | `auto` (default): cache, then local data, then NASA cloud. `local`: never use the network (cache or stored data only; 409 if neither covers it). `cloud`: always stream fresh data from NASA |
 | `include_series` | no | Default `true`. Set it to `false` to get only the statistics, a much smaller response |
 
 **Response** (real result for the Barents Sea; numbers rounded, lists shortened)
@@ -176,6 +218,7 @@ The core of the tool. Given a variable and a region, it:
     "grid_resolution_deg": [0.5, 0.625],
     "bounds": [20.0, 72.0, 60.0, 80.0]
   },
+  "data_source": { "type": "local", "description": "local copy of 'barents_sea'" },
   "stats": {
     "n_months": 288, "start": "2001-01", "end": "2024-12", "years": 23.92,
     "units": "°C",
@@ -222,6 +265,9 @@ The core of the tool. Given a variable and a region, it:
 | `grid_resolution_deg` | Size of one grid square in degrees (lat, lon) |
 | `bounds` | Polygon bounding box: [west, south, east, north] |
 
+`data_source.type` is `"local"` or `"cloud"`. `description` says which local copy was used.
+`data_source.cached` is `true` when the result came from the cache.
+
 `stats.linear`: the straight-line trend, fitted to the anomalies.
 
 | Field | Meaning |
@@ -267,75 +313,185 @@ Summary fields:
 | Code | When | Example `detail` |
 |---|---|---|
 | 404 | Unknown variable | `Unknown variable 'temp'. Options: precip, t2m, ...` |
-| 409 | Variable not downloaded yet | `Data for 'precip' isn't downloaded yet. In PythonPoc run: ...` |
-| 422 | Bad GeoJSON, bad or out-of-order dates, a region with no data (e.g. ocean for soil moisture), or fewer than 24 months of data | `Invalid region GeoJSON: ...` |
+| 409 | `source: "local"` but no local data covers the request | `No local data covers this region and period.` |
+| 422 | Bad GeoJSON, bad or out-of-order dates, a region with no data (e.g. ocean for soil moisture), fewer than 24 months of data, or a NASA request that failed | `Invalid region GeoJSON: ...` |
+| 503 | The request needs NASA's cloud, but the server has no Earthdata credentials | `This needs NASA's cloud, but ...` |
 
-### GET /variables/{key}/coverage
+### POST /plan
 
-Call this before `/analyze` to find out whether the data for a date range is on the
-server. If it isn't, the response says roughly how big the download would be.
+Same body as `/analyze`. Answers "where would the data come from, and how long?" without
+running anything. The frontend uses it to choose between `/analyze` and `/analyze/jobs`.
 
-`GET /variables/precip/coverage?start=2020-01&end=2024-12`
+`source` is `"cache"`, `"local"` or `"cloud"`.
 
 ```json
-{
-  "variable": "precip", "start": "2020-01", "end": "2024-12",
-  "requested_months": 60, "available_months": 0, "missing_months": 60,
-  "missing_first": "2020-01", "missing_last": "2024-12",
-  "download_months": 60, "estimated_mb": 402.0,
-  "limit_mb": 500.0, "within_limit": true, "data_starts": "1998-01"
-}
+{ "source": "cloud", "description": "streamed from NASA Earthdata Cloud",
+  "start": "2001-01", "end": "2024-12", "months": 288, "estimated_seconds": 32 }
 ```
 
-| Field | Meaning |
-|---|---|
-| `missing_months` | Months in the range that can't be analyzed yet |
-| `download_months` | Missing months that must come from NASA. Others are already on disk and only need preparing |
-| `estimated_mb` | Estimated download size, based on measured per-month sizes |
-| `within_limit` | `false` means `/fetch` will refuse this range (413) |
+### POST /analyze/jobs
 
-### POST /variables/{key}/fetch
-
-Starts downloading the missing months for `{"start": "YYYY-MM", "end": "YYYY-MM"}` in
-the background and returns right away (202) with a job to poll.
-- If a download for the same NASA dataset is already running, you get that job back
-  instead of starting a second one.
-- Fetching `soil_moisture` also prepares `evapotranspiration`, because both come from
-  the same NASA files.
+Same body as `/analyze`. Starts the analysis in the background and returns right away (202):
 
 ```json
 { "job": { "id": "3f2a9c1b7d4e", "status": "queued", "...": "..." },
-  "message": "Download started.", "coverage": { "...": "..." } }
+  "plan": { "source": "cloud", "...": "..." } }
 ```
 
-| Code | When |
-|---|---|
-| 202 with `"job": null` | Nothing missing, so there's nothing to do |
-| 413 | Estimated size is over `MAX_FETCH_MB`; choose a shorter range |
-| 503 | The server has no Earthdata credentials (`EARTHDATA_TOKEN` or `~/_netrc`) |
+### POST /compare
+
+Analyze **one variable over 2–5 regions for the same period**: for example, warming in the
+Arctic vs the Amazon. Each region is analyzed exactly like `/analyze`, using the cache,
+local data or NASA cloud as available.
+
+**Request**
+
+```json
+{
+  "variable": "t2m",
+  "start": "2001-01",
+  "end": "2024-12",
+  "regions": [
+    { "name": "Barents Sea", "region": { "type": "Polygon", "coordinates": [[[20,72],[55,72],[55,80],[20,80],[20,72]]] } },
+    { "name": "Lake Mead",   "region": { "type": "Polygon", "coordinates": [[[-115.3,35.7],[-113.7,35.7],[-113.7,36.8],[-115.3,36.8],[-115.3,35.7]]] } }
+  ],
+  "include_series": true
+}
+```
+
+Region names must be unique; they identify each region in the response. `source` works
+like `/analyze`.
+
+**Response** (shortened)
+
+```json
+{
+  "variable": { "key": "t2m", "name": "Air temperature (2 m)", "units": "°C", "...": "..." },
+  "start": "2001-01", "end": "2024-12",
+  "regions": [
+    { "name": "Barents Sea", "region": { "...": "..." }, "data_source": { "type": "local", "cached": false, "...": "..." },
+      "stats": { "linear": { "slope_per_decade": 0.769, "...": "..." }, "significant": true, "...": "..." },
+      "series": [ { "date": "2001-01", "value": -5.82, "anomaly": -0.003 }, "..." ] },
+    { "name": "Lake Mead", "...": "same shape as /analyze, without `variable`" }
+  ],
+  "summary": {
+    "analyzed": 2,
+    "significant": ["Barents Sea", "Lake Mead"],
+    "fastest_change": { "name": "Barents Sea", "slope_per_decade": 0.769 }
+  }
+}
+```
+
+- If one region can't be analyzed (for example ocean for soil moisture), its entry is
+  `{ "name": ..., "error": "..." }` and the other regions still come back.
+- Only if **none** can be analyzed is the response a 422.
+- Regions are analyzed one after another, because each cloud region already uses 16
+  parallel requests to NASA. Two cloud regions take about twice as long as one.
+
+### POST /compare/plan and POST /compare/jobs
+
+Same body as `/compare`.
+
+`/compare/plan` returns each region's plan and the total estimated time. `source` is
+`"cloud"` if any region needs NASA, otherwise `"local"`:
+
+```json
+{ "source": "cloud", "estimated_seconds": 33,
+  "regions": [ { "name": "Barents Sea", "source": "local", "...": "..." },
+               { "name": "Europe", "source": "cloud", "...": "..." } ] }
+```
+
+`/compare/jobs` starts the comparison in the background. Its progress counts months
+across all cloud regions together, and `result` holds the `/compare` response when done.
+
+### POST /drivers (cause analysis)
+
+Same body as `/analyze`, plus two optional fields:
+- `region_name`: helps the AI explanation, e.g. `"Rondônia (Amazon)"`.
+- `explain`: default `true`. Set it to `false` to skip Claude.
+
+What it does:
+1. Analyzes the target and each of its `related` variables for the same region and period,
+   using the cache, local data or NASA cloud.
+2. **Correlation:** compares the target's anomalies (seasonal cycle removed) with each
+   driver's, with the driver leading by 0–3 months. P-values are adjusted for
+   autocorrelation.
+3. **Regression:** fits the target on all drivers, then converts each coefficient into
+   "how much of the target's trend this driver's own trend implies" (`share_of_target_trend`).
+4. **Machine learning:** a random forest on the lagged drivers, giving permutation importance
+   per driver. Time-ordered cross-validation reports whether the model predicts anything
+   at all (`has_skill`).
+5. Labels each driver's **evidence** as `strong`, `moderate` or `weak`, and adds the known
+   **physical link**, including which way the effect usually runs (rain drives soil
+   moisture, not the reverse).
+6. **Claude** (`claude-haiku-5-5`, structured output) writes a plain-language explanation
+   grounded in those numbers. It separates what the data shows from outside knowledge (such
+   as deforestation) and lists caveats.
+
+**Response** (real Rondônia temperature result, shortened)
+
+```json
+{
+  "variable": { "key": "t2m", "...": "..." }, "start": "2001-01", "end": "2024-12",
+  "target": { "stats": { "...": "same as /analyze" }, "region": { "...": "..." }, "data_source": { "...": "..." } },
+  "drivers": [
+    { "rank": 1, "key": "soil_moisture", "name": "Soil moisture (top 10 cm)", "evidence": "strong",
+      "trend": { "slope_per_decade": -1.417, "significant": true, "...": "..." },
+      "correlation": { "r": -0.67, "lag_months": 0, "p_value": 0.0000, "n": 288 },
+      "regression": { "share_of_target_trend": 0.69, "trend_contribution_per_decade": 0.56, "...": "..." },
+      "ml_importance_share": 0.85,
+      "physical_link": { "likely_direction": "both", "mechanism": "Drier soil evaporates less water, ..." } },
+    "..."
+  ],
+  "models": { "regression": { "r_squared": 0.46, "n_months": 288 },
+              "random_forest": { "available": true, "cv_r2": -0.03, "has_skill": false } },
+  "region_context": { "centroid": { "lat": -10.7, "lon": -62.4 }, "latitude_zone": "tropical",
+                      "annual_precip_mm": 1729, "mean_temp_c": 26.4, "...": "..." },
+  "caveats": [ "These are statistical associations, not proof of cause. ...", "..." ],
+  "explanation": {
+    "available": true, "model": "claude-haiku-5-5", "cached": false,
+    "headline": "...", "summary": "...",
+    "likely_causes": [ { "cause": "...", "shown_by_data": true, "explanation": "...", "confidence": "strong" } ],
+    "other_possible_factors": ["..."], "caveats": ["..."], "investigate_next": ["..."]
+  }
+}
+```
+
+Without a key, `explanation` is `{"available": false, "reason": "..."}` and everything else
+is still returned. The same happens if the AI call fails or is declined, so the statistics
+are never lost.
+
+Explanations for identical evidence are cached in memory (256 maximum), so repeating a
+request doesn't call Claude again. A cloud cause analysis streams up to 4 variables, so
+expect about 1–2 minutes the first time; examples and cached results take a few seconds.
+
+### POST /cache/clear
+
+Empties the result cache and returns the cache statistics. This is handy before a demo, if
+you want to show a region actually streaming from NASA.
 
 ### GET /jobs/{id}
 
 ```json
-{ "id": "3f2a9c1b7d4e", "variable": "precip", "start": "2020-01", "end": "2024-12",
-  "status": "downloading", "message": "Downloaded 24 of 60 months from NASA",
-  "done": 24, "total": 60, "progress": 0.4, "error": null }
+{ "id": "3f2a9c1b7d4e", "variable": "t2m", "start": "2001-01", "end": "2024-12",
+  "status": "running", "message": "Streaming from NASA Earthdata Cloud: 120 of 288 months",
+  "done": 120, "total": 288, "progress": 0.417, "error": null, "result": null }
 ```
 
-- `status` moves through `queued` → `downloading` → `building` → `done`, or ends at
-  `error`, in which case `error` says why.
-- Jobs run one at a time.
-- Job history is kept in memory, so it's lost when the server restarts. Downloaded
-  data stays.
+- `status` moves through `queued` -> `running` -> `done`, or ends at `error`, in which case
+  `error` says why.
+- When `done`, `result` holds the same JSON that `/analyze` (or `/compare`) returns.
+- Two analyses run at once; more wait in the queue.
+- Jobs are kept in memory (the newest 50) and cleared when the server restarts.
 
 ## Settings
 
 | Environment variable | Default | Purpose |
 |---|---|---|
-| `EARTHTRENDS_DATA_DIR` | `../PythonPoc/data` | Where data is stored |
-| `MAX_FETCH_MB` | `500` | Largest download allowed per `/fetch` request |
+| `EARTHTRENDS_DATA_DIR` | `../PythonPoc/data` | Where local data (example copies) is stored |
 | `CORS_ORIGINS` | `http://localhost:5173,http://127.0.0.1:5173` | Comma-separated browser origins allowed to call the API (the React dev server). Postman and curl aren't affected by CORS |
-| `EARTHDATA_TOKEN` | – | NASA Earthdata token for `/fetch`; otherwise `~/_netrc` is used |
+| `EARTHDATA_TOKEN` | – | NASA Earthdata token for streaming from the cloud; otherwise `~/_netrc` is used |
+| `ANTHROPIC_API_KEY` | – | Enables the AI explanation in `/drivers`. Put it in `TrendApi/.env` |
 
 ## Try it
 
@@ -361,4 +517,5 @@ Ready-made request bodies are in `samples/`:
 python -m pytest
 ```
 
-The tests use synthetic data with a known trend, so no download is needed.
+The tests use synthetic data with a known trend and a fake NASA cloud, so they need no
+network access.

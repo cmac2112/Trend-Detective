@@ -42,9 +42,25 @@ def cube_path(var: Variable) -> Path:
 def month_from_filename(path: Path) -> pd.Timestamp:
     """All three products put YYYYMM in the file name; it's more reliable than
     decoding each product's own time convention."""
-    m = _MONTH_RE.search(path.name)
+    return month_from_filename_str(path.name)
+
+
+_DOY_RE = re.compile(r"\.A((?:19|20)\d{2})(\d{3})\.")  # MODIS: .AYYYYDDD. (year + day of year)
+_DOTTED_RE = re.compile(r"(?<!\d)((?:19|20)\d{2})\.(0[1-9]|1[0-2])\.\d{2}\.")  # AIRS: AIRS.2003.12.01.
+
+
+def month_from_filename_str(name: str) -> pd.Timestamp:
+    name = name.rsplit("/", 1)[-1]
+    doy = _DOY_RE.search(name)
+    if doy:
+        day = pd.Timestamp(year=int(doy.group(1)), month=1, day=1) + pd.Timedelta(days=int(doy.group(2)) - 1)
+        return pd.Timestamp(year=day.year, month=day.month, day=1)
+    dotted = _DOTTED_RE.search(name)
+    if dotted:
+        return pd.Timestamp(year=int(dotted.group(1)), month=int(dotted.group(2)), day=1)
+    m = _MONTH_RE.search(name)
     if not m:
-        raise ValueError(f"Can't find a YYYYMM date in file name: {path.name}")
+        raise ValueError(f"Can't find a YYYYMM date in file name: {name}")
     return pd.Timestamp(year=int(m.group(1)), month=int(m.group(2)), day=1)
 
 
@@ -62,7 +78,7 @@ def _opendap_url(granule, var: Variable) -> str:
     if base is None:
         raise RuntimeError(f"No OPeNDAP link for {granule.data_links()[0]}")
     prefix = f"/{var.group}" if var.group else ""
-    names = sorted({v.source_var for v in VARIABLES.values() if v.collection == var.collection})
+    names = sorted({n for v in VARIABLES.values() if v.collection == var.collection for n in v.source_vars})
     ce = ";".join([f"{prefix}/{n}" for n in names] + [f"{prefix}/lat", f"{prefix}/lon"])
     return f"{base}.dap.nc4?dap4.ce={quote(ce, safe='/')}"
 
@@ -116,8 +132,7 @@ def raw_months(var: Variable) -> set[pd.Timestamp]:
 
 def coverage(var: Variable, start: str, end: str) -> dict:
     """What's missing for start..end and roughly how big downloading it would be."""
-    first = pd.Timestamp(f"{var.first_month}-01")
-    requested = [m for m in months_between(start, end) if m >= first]
+    requested = var.available_months(start, end)
     in_cube = cube_months(var)
     on_disk = raw_months(var)
     missing = [m for m in requested if m not in in_cube]
@@ -140,6 +155,9 @@ def download(var: Variable, start: str, end: str, threads: int = 4,
     Files already on disk are skipped, so an interrupted download can be resumed."""
     import earthaccess
 
+    if not var.global_fetch:
+        raise DataError(f"{var.name} files are too large to download whole; it is streamed from "
+                        f"NASA's cloud per region instead (use analyze or prepare-examples).")
     _login(interactive)
 
     end_ts = pd.Period(end, "M").end_time.strftime("%Y-%m-%d")
@@ -208,7 +226,11 @@ def raw_files(var: Variable) -> list[Path]:
 
 def _read_month(path: Path, var: Variable) -> xr.DataArray:
     with xr.open_dataset(path, group=var.group, decode_times=False, engine="netcdf4") as ds:
-        da = ds[var.source_var]
+        missing = [n for n in var.source_vars if n not in ds]
+        if missing:
+            raise DataError(f"{path.name} has no {', '.join(missing)} (downloaded before {var.key} was "
+                            f"added). Delete data/raw/{var.collection} and fetch again.")
+        da = sum(ds[name] for name in var.source_vars)
         da = da.squeeze([d for d in da.dims if d == "time"], drop=True)
         da = da.transpose("lat", "lon").astype("float32").load()
     da = da * np.float32(var.scale) + np.float32(var.offset)
@@ -268,10 +290,29 @@ def build_cube(var: Variable, progress: Progress | None = None) -> Path:
         old = path.with_name(path.name + ".old")
         if old.exists():
             shutil.rmtree(old)
-        path.rename(old)
-        target.rename(path)
+        _rename_retry(path, old)
+        try:
+            _rename_retry(target, path)
+        except OSError:
+            _rename_retry(old, path)  # put the previous cube back so nothing goes missing
+            raise
         shutil.rmtree(old, ignore_errors=True)
     return path
+
+
+def _rename_retry(src: Path, dst: Path, attempts: int = 20) -> None:
+    """Windows briefly locks freshly written folders (antivirus, indexing), which makes
+    a rename fail with 'Access is denied'. Retry for a few seconds before giving up."""
+    import time
+
+    for i in range(attempts):
+        try:
+            src.rename(dst)
+            return
+        except PermissionError:
+            if i == attempts - 1:
+                raise
+            time.sleep(0.5)
 
 
 def open_cube(var: Variable) -> xr.DataArray:
