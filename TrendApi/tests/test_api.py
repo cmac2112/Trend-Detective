@@ -75,3 +75,60 @@ def test_examples(client):
     assert "barents_sea" in client.get("/examples").json()
     assert client.get("/examples/barents_sea").json()["type"] == "Feature"
     assert client.get("/examples/..%2Fsecret").status_code == 404
+
+
+@pytest.fixture
+def isolated_raw(monkeypatch, tmp_path):
+    monkeypatch.setattr(main.data, "RAW_DIR", tmp_path / "raw")
+
+
+def test_coverage(client, isolated_raw):
+    full = client.get("/variables/t2m/coverage", params={"start": "2001-01", "end": "2024-12"}).json()
+    assert full["missing_months"] == 0 and full["estimated_mb"] == 0
+    p = client.get("/variables/precip/coverage", params={"start": "2001-01", "end": "2024-12"}).json()
+    assert p["missing_months"] == 288 and p["estimated_mb"] > main.MAX_FETCH_MB and not p["within_limit"]
+    assert client.get("/variables/precip/coverage", params={"start": "2001-13", "end": "2024-12"}).status_code == 422
+    assert client.get("/variables/precip/coverage", params={"start": "2001-01", "end": "2999-12"}).status_code == 422
+
+
+def test_fetch_over_limit_refused(client, isolated_raw):
+    r = client.post("/variables/precip/fetch", json={"start": "2001-01", "end": "2024-12"})
+    assert r.status_code == 413 and "limit" in r.json()["detail"]
+
+
+def test_fetch_nothing_missing(client, isolated_raw):
+    r = client.post("/variables/t2m/fetch", json={"start": "2005-01", "end": "2006-12"})
+    assert r.status_code == 202 and r.json()["job"] is None
+
+
+def test_fetch_job_runs(client, isolated_raw, monkeypatch):
+    import time
+    calls = []
+    monkeypatch.setattr(main.data, "have_credentials", lambda: True)
+    def fake_download(var, start, end, interactive, progress):
+        assert interactive is False  # server must never prompt for a password
+        for i in range(3):
+            progress(i + 1, 3)
+        calls.append(("download", var.key))
+    monkeypatch.setattr(main.data, "download", fake_download)
+    monkeypatch.setattr(main.data, "build_cube", lambda var, progress: calls.append(("build", var.key)))
+
+    r = client.post("/variables/soil_moisture/fetch", json={"start": "2023-01", "end": "2024-12"})
+    assert r.status_code == 202
+    job_id = r.json()["job"]["id"]
+    for _ in range(50):
+        job = client.get(f"/jobs/{job_id}").json()
+        if job["status"] in ("done", "error"):
+            break
+        time.sleep(0.05)
+    assert job["status"] == "done", job
+    # downloading GLDAS once builds both variables stored in those files
+    assert calls == [("download", "soil_moisture"), ("build", "soil_moisture"), ("build", "evapotranspiration")]
+    assert client.get("/jobs/nope").status_code == 404
+
+
+def test_cors(client):
+    ok = client.options("/variables", headers={"Origin": "http://localhost:5173", "Access-Control-Request-Method": "GET"})
+    assert ok.headers.get("access-control-allow-origin") == "http://localhost:5173"
+    bad = client.get("/variables", headers={"Origin": "https://evil.example"})
+    assert "access-control-allow-origin" not in bad.headers

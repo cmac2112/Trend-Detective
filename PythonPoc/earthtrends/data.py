@@ -13,7 +13,9 @@ from __future__ import annotations
 
 import os
 import re
+import shutil
 import threading
+from typing import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from urllib.parse import quote
@@ -65,14 +67,80 @@ def _opendap_url(granule, var: Variable) -> str:
     return f"{base}.dap.nc4?dap4.ce={quote(ce, safe='/')}"
 
 
-def download(var: Variable, start: str, end: str, threads: int = 4) -> list[Path]:
+class DataError(Exception):
+    """A problem the user can fix (missing data, failed login, failed downloads)."""
+
+
+Progress = Callable[[int, int], None]  # (done, total)
+
+
+def have_credentials() -> bool:
+    """True if Earthdata credentials are available without prompting anyone."""
+    if os.environ.get("EARTHDATA_TOKEN") or (
+        os.environ.get("EARTHDATA_USERNAME") and os.environ.get("EARTHDATA_PASSWORD")
+    ):
+        return True
+    home = Path.home()
+    return (home / ".netrc").exists() or (home / "_netrc").exists()
+
+
+def _login(interactive: bool):
+    import earthaccess
+
+    if interactive:
+        auth = earthaccess.login(persist=True)  # env vars -> .netrc -> prompt
+    else:  # servers must never wait on a password prompt
+        if not have_credentials():
+            raise DataError("No Earthdata credentials on this machine (set EARTHDATA_TOKEN or create a _netrc file).")
+        strategy = "environment" if (os.environ.get("EARTHDATA_TOKEN") or os.environ.get("EARTHDATA_USERNAME")) else "netrc"
+        auth = earthaccess.login(strategy=strategy)
+    if not auth or not getattr(auth, "authenticated", False):
+        raise DataError("Earthdata login failed. Check your credentials.")
+
+
+def months_between(start: str, end: str) -> list[pd.Timestamp]:
+    return list(pd.date_range(f"{start}-01", f"{end}-01", freq="MS"))
+
+
+def cube_months(var: Variable) -> set[pd.Timestamp]:
+    path = cube_path(var)
+    if not path.exists():
+        return set()
+    with xr.open_zarr(path, consolidated=False) as ds:
+        return set(pd.to_datetime(ds.time.values))
+
+
+def raw_months(var: Variable) -> set[pd.Timestamp]:
+    return {month_from_filename(f) for f in raw_files(var)}
+
+
+def coverage(var: Variable, start: str, end: str) -> dict:
+    """What's missing for start..end and roughly how big downloading it would be."""
+    first = pd.Timestamp(f"{var.first_month}-01")
+    requested = [m for m in months_between(start, end) if m >= first]
+    in_cube = cube_months(var)
+    on_disk = raw_months(var)
+    missing = [m for m in requested if m not in in_cube]
+    to_download = [m for m in missing if m not in on_disk]
+    return {
+        "requested_months": len(requested),
+        "available_months": len(requested) - len(missing),
+        "missing_months": len(missing),
+        "missing_first": f"{missing[0]:%Y-%m}" if missing else None,
+        "missing_last": f"{missing[-1]:%Y-%m}" if missing else None,
+        "download_months": len(to_download),
+        "estimated_mb": round(len(to_download) * var.mb_per_month, 1),
+        "data_starts": var.first_month,
+    }
+
+
+def download(var: Variable, start: str, end: str, threads: int = 4,
+             interactive: bool = True, progress: Progress | None = None) -> list[Path]:
     """Download monthly subsets for var's collection between start and end (YYYY-MM).
     Files already on disk are skipped, so an interrupted download can be resumed."""
     import earthaccess
 
-    auth = earthaccess.login(persist=True)  # env vars -> .netrc -> interactive prompt
-    if not auth or not getattr(auth, "authenticated", False):
-        raise SystemExit("Earthdata login failed. See README for setup.")
+    _login(interactive)
 
     end_ts = pd.Period(end, "M").end_time.strftime("%Y-%m-%d")
     results = earthaccess.search_data(
@@ -110,6 +178,8 @@ def download(var: Variable, start: str, end: str, threads: int = 4) -> list[Path
         raise RuntimeError(f"Failed {target.name}: {last_err}")
 
     done, failed = [], []
+    if progress:
+        progress(0, len(jobs))
     with ThreadPoolExecutor(max_workers=threads) as pool:
         futures = {pool.submit(fetch, u, t): t for u, t in jobs}
         for i, fut in enumerate(as_completed(futures), 1):
@@ -118,11 +188,13 @@ def download(var: Variable, start: str, end: str, threads: int = 4) -> list[Path
             except Exception as e:
                 failed.append(futures[fut])
                 print(f"  {e}")
+            if progress:
+                progress(i, len(jobs))
             if i % 12 == 0 or i == len(jobs):
                 print(f"  {i}/{len(jobs)} downloaded")
     if failed:
         # Stop before building the cube so it never has gaps in the middle.
-        raise SystemExit(f"{len(failed)} downloads failed. Run the same command again to retry them.")
+        raise DataError(f"{len(failed)} downloads failed. Try again to retry them.")
     return done
 
 
@@ -146,46 +218,64 @@ def _read_month(path: Path, var: Variable) -> xr.DataArray:
     return da
 
 
-def build_cube(var: Variable) -> Path:
-    """Append every raw month not already in the cube. Safe to re-run."""
+def build_cube(var: Variable, progress: Progress | None = None) -> Path:
+    """Add every downloaded month that isn't in the cube yet. Safe to re-run.
+
+    New months after the cube's last month are appended. If any new month is
+    *older* than that (e.g. extending a 2022-2024 cube back to 2001), the cube is
+    rebuilt from all downloaded files in a temporary folder and swapped in, so
+    months always stay in time order."""
     files = raw_files(var)
     if not files:
-        raise SystemExit(f"No raw files for {var.collection}. Run the download first.")
+        raise DataError(f"No downloaded files for {var.collection}. Download first.")
 
     path = cube_path(var)
     path.parent.mkdir(parents=True, exist_ok=True)
-    have: set[pd.Timestamp] = set()
-    if path.exists():
-        with xr.open_zarr(path, consolidated=False) as existing:
-            have = set(pd.to_datetime(existing.time.values))
+    have = cube_months(var)
 
     # Pick one file per month (MERRA-2 sometimes has reprocessed duplicates; keep the last).
     by_month: dict[pd.Timestamp, Path] = {}
     for f in files:
         by_month[month_from_filename(f)] = f
     todo = sorted(m for m in by_month if m not in have)
+
+    target = path
     if have and todo and todo[0] < max(have):
-        raise SystemExit(
-            f"New months older than the existing cube for {var.key}. "
-            f"Delete {path} and rebuild."
-        )
-    print(f"{var.key}: {len(have)} months in cube, {len(todo)} to add")
+        todo = sorted(by_month)  # rebuild everything, in order
+        target = path.with_name(path.name + ".rebuild")
+        if target.exists():
+            shutil.rmtree(target)
+        print(f"{var.key}: adding older months, rebuilding cube with {len(todo)} months")
+    else:
+        print(f"{var.key}: {len(have)} months in cube, {len(todo)} to add")
 
     batch = 12  # write a year at a time to keep memory modest
+    if progress:
+        progress(0, len(todo))
     for i in range(0, len(todo), batch):
         months = todo[i : i + batch]
         da = xr.concat([_read_month(by_month[m], var) for m in months], dim="time")
         ds = da.to_dataset().chunk({"time": batch, "lat": SPATIAL_CHUNK, "lon": SPATIAL_CHUNK})
-        if path.exists():
-            ds.to_zarr(path, mode="a", append_dim="time", consolidated=False)
+        if target.exists():
+            ds.to_zarr(target, mode="a", append_dim="time", consolidated=False)
         else:
-            ds.to_zarr(path, mode="w", consolidated=False)
+            ds.to_zarr(target, mode="w", consolidated=False)
+        if progress:
+            progress(min(i + batch, len(todo)), len(todo))
         print(f"  wrote {months[0]:%Y-%m} .. {months[-1]:%Y-%m}")
+
+    if target != path:  # swap the rebuilt cube in
+        old = path.with_name(path.name + ".old")
+        if old.exists():
+            shutil.rmtree(old)
+        path.rename(old)
+        target.rename(path)
+        shutil.rmtree(old, ignore_errors=True)
     return path
 
 
 def open_cube(var: Variable) -> xr.DataArray:
     path = cube_path(var)
     if not path.exists():
-        raise SystemExit(f"No cube for '{var.key}'. Run: python -m earthtrends fetch {var.key}")
+        raise DataError(f"No data for '{var.key}' yet. Run: python -m earthtrends fetch {var.key}")
     return xr.open_zarr(path, consolidated=False)[var.key]

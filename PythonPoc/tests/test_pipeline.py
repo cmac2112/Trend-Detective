@@ -61,3 +61,38 @@ def test_nan_cells_ignored():
 ])
 def test_month_from_filename(name, expected):
     assert month_from_filename(Path(name)).strftime("%Y-%m") == expected
+
+
+def _fake_gldas(raw_dir, months):
+    from earthtrends import catalog
+    var = catalog.get("soil_moisture")
+    d = raw_dir / var.collection
+    d.mkdir(parents=True, exist_ok=True)
+    lat, lon = np.arange(30.125, 40, 0.25), np.arange(-120.125, -110, 0.25)
+    for m in months:
+        v = np.full((1, lat.size, lon.size), float(m.year * 100 + m.month), dtype="f4")
+        xr.Dataset({"SoilMoi0_10cm_inst": (("time", "lat", "lon"), v),
+                    "Evap_tavg": (("time", "lat", "lon"), v * 0)},
+                   coords={"time": [0.0], "lat": lat, "lon": lon}
+                   ).to_netcdf(d / f"GLDAS_NOAH025_M.A{m:%Y%m}.021.nc4")
+    return var
+
+
+def test_build_cube_adds_older_months_and_coverage(tmp_path, monkeypatch):
+    from earthtrends import data
+    monkeypatch.setattr(data, "RAW_DIR", tmp_path / "raw")
+    monkeypatch.setattr(data, "CUBE_DIR", tmp_path / "cubes")
+    var = _fake_gldas(data.RAW_DIR, pd.date_range("2022-01", "2022-06", freq="MS"))
+    data.build_cube(var)
+
+    cov = data.coverage(var, "2021-01", "2022-06")
+    assert cov["missing_months"] == 12 and cov["download_months"] == 12
+    assert cov["estimated_mb"] == pytest.approx(12 * var.mb_per_month)
+
+    _fake_gldas(data.RAW_DIR, pd.date_range("2021-01", "2021-12", freq="MS"))  # older months
+    assert data.coverage(var, "2021-01", "2022-06")["download_months"] == 0  # on disk, not in cube
+    data.build_cube(var)
+    times = pd.to_datetime(data.open_cube(var).time.values)
+    assert len(times) == 18 and times.is_monotonic_increasing
+    assert data.coverage(var, "2021-01", "2022-06")["missing_months"] == 0
+    assert not (data.CUBE_DIR / "soil_moisture.zarr.rebuild").exists()

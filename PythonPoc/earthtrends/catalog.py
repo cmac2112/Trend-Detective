@@ -21,6 +21,8 @@ class Variable:
     group: str | None = None # HDF5 group holding the variable (IMERG uses "Grid")
     related: tuple[str, ...] = field(default_factory=tuple)  # likely drivers / linked variables
     percent_meaningful: bool = True  # False for interval scales like °C, where "% of mean" is nonsense
+    mb_per_month: float = 1.0  # measured size of one month's OPeNDAP subset (for download estimates)
+    first_month: str = "2001-01"  # first month the collection has data
 
 
 VARIABLES: dict[str, Variable] = {
@@ -40,6 +42,8 @@ VARIABLES: dict[str, Variable] = {
             scale=24.0,  # IMERG V07 monthly is mm/hr
             group="Grid",
             related=("t2m", "soil_moisture", "evapotranspiration"),
+            mb_per_month=6.7,
+            first_month="1998-01",
         ),
         Variable(
             key="t2m",
@@ -55,6 +59,8 @@ VARIABLES: dict[str, Variable] = {
             offset=-273.15,  # Kelvin -> Celsius
             percent_meaningful=False,
             related=("precip", "soil_moisture", "evapotranspiration"),
+            mb_per_month=0.65,
+            first_month="1980-01",
         ),
         Variable(
             key="soil_moisture",
@@ -68,6 +74,8 @@ VARIABLES: dict[str, Variable] = {
             source_var="SoilMoi0_10cm_inst",
             units="mm",
             related=("precip", "t2m", "evapotranspiration"),
+            mb_per_month=1.6,
+            first_month="2000-01",
         ),
         Variable(
             key="evapotranspiration",
@@ -82,6 +90,8 @@ VARIABLES: dict[str, Variable] = {
             units="mm/day",
             scale=86400.0,  # kg m-2 s-1 -> mm/day
             related=("precip", "t2m", "soil_moisture"),
+            mb_per_month=1.6,
+            first_month="2000-01",
         ),
     ]
 }

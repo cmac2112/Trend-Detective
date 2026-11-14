@@ -40,6 +40,9 @@ uvicorn app.main:app --reload
 | GET | `/examples` | Lists the ready-made demo regions |
 | GET | `/examples/{name}` | Returns one demo region's polygon |
 | POST | `/analyze` | **The main endpoint**: time series + trend analysis for a variable over a polygon |
+| GET | `/variables/{key}/coverage?start=&end=` | How much of a date range is downloaded, and the estimated size of the rest |
+| POST | `/variables/{key}/fetch` | Download the missing months in the background (size-limited) |
+| GET | `/jobs/{id}` | Progress of a download |
 
 A typical frontend flow:
 1. Call `GET /variables` to fill the variable picker.
@@ -266,6 +269,73 @@ Summary fields:
 | 404 | Unknown variable | `Unknown variable 'temp'. Options: precip, t2m, ...` |
 | 409 | Variable not downloaded yet | `Data for 'precip' isn't downloaded yet. In PythonPoc run: ...` |
 | 422 | Bad GeoJSON, bad or out-of-order dates, a region with no data (e.g. ocean for soil moisture), or fewer than 24 months of data | `Invalid region GeoJSON: ...` |
+
+### GET /variables/{key}/coverage
+
+Call this before `/analyze` to find out whether the data for a date range is on the
+server. If it isn't, the response says roughly how big the download would be.
+
+`GET /variables/precip/coverage?start=2020-01&end=2024-12`
+
+```json
+{
+  "variable": "precip", "start": "2020-01", "end": "2024-12",
+  "requested_months": 60, "available_months": 0, "missing_months": 60,
+  "missing_first": "2020-01", "missing_last": "2024-12",
+  "download_months": 60, "estimated_mb": 402.0,
+  "limit_mb": 500.0, "within_limit": true, "data_starts": "1998-01"
+}
+```
+
+| Field | Meaning |
+|---|---|
+| `missing_months` | Months in the range that can't be analyzed yet |
+| `download_months` | Missing months that must come from NASA. Others are already on disk and only need preparing |
+| `estimated_mb` | Estimated download size, based on measured per-month sizes |
+| `within_limit` | `false` means `/fetch` will refuse this range (413) |
+
+### POST /variables/{key}/fetch
+
+Starts downloading the missing months for `{"start": "YYYY-MM", "end": "YYYY-MM"}` in
+the background and returns right away (202) with a job to poll.
+- If a download for the same NASA dataset is already running, you get that job back
+  instead of starting a second one.
+- Fetching `soil_moisture` also prepares `evapotranspiration`, because both come from
+  the same NASA files.
+
+```json
+{ "job": { "id": "3f2a9c1b7d4e", "status": "queued", "...": "..." },
+  "message": "Download started.", "coverage": { "...": "..." } }
+```
+
+| Code | When |
+|---|---|
+| 202 with `"job": null` | Nothing missing, so there's nothing to do |
+| 413 | Estimated size is over `MAX_FETCH_MB`; choose a shorter range |
+| 503 | The server has no Earthdata credentials (`EARTHDATA_TOKEN` or `~/_netrc`) |
+
+### GET /jobs/{id}
+
+```json
+{ "id": "3f2a9c1b7d4e", "variable": "precip", "start": "2020-01", "end": "2024-12",
+  "status": "downloading", "message": "Downloaded 24 of 60 months from NASA",
+  "done": 24, "total": 60, "progress": 0.4, "error": null }
+```
+
+- `status` moves through `queued` → `downloading` → `building` → `done`, or ends at
+  `error`, in which case `error` says why.
+- Jobs run one at a time.
+- Job history is kept in memory, so it's lost when the server restarts. Downloaded
+  data stays.
+
+## Settings
+
+| Environment variable | Default | Purpose |
+|---|---|---|
+| `EARTHTRENDS_DATA_DIR` | `../PythonPoc/data` | Where data is stored |
+| `MAX_FETCH_MB` | `500` | Largest download allowed per `/fetch` request |
+| `CORS_ORIGINS` | `http://localhost:5173,http://127.0.0.1:5173` | Comma-separated browser origins allowed to call the API (the React dev server). Postman and curl aren't affected by CORS |
+| `EARTHDATA_TOKEN` | – | NASA Earthdata token for `/fetch`; otherwise `~/_netrc` is used |
 
 ## Try it
 

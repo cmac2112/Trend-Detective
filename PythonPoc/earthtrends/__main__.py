@@ -80,4 +80,7 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except data.DataError as e:
+        raise SystemExit(f"Error: {e}")
