@@ -1,0 +1,10 @@
+{
+  "type": "Feature",
+  "properties": {"name": "Barents Sea (Arctic, fast warming as sea ice retreats)"},
+  "geometry": {
+    "type": "Polygon",
+    "coordinates": [[
+      [20.0, 72.0], [55.0, 72.0], [60.0, 76.0], [55.0, 80.0], [25.0, 80.0], [20.0, 76.0], [20.0, 72.0]
+    ]]
+  }
+}

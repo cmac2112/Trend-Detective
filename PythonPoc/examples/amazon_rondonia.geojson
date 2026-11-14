@@ -1,0 +1,10 @@
+{
+  "type": "Feature",
+  "properties": {"name": "Rondonia, Brazil (Amazon deforestation frontier)"},
+  "geometry": {
+    "type": "Polygon",
+    "coordinates": [[
+      [-64.5, -12.5], [-60.0, -13.5], [-60.0, -9.0], [-63.5, -8.0], [-65.5, -9.5], [-64.5, -12.5]
+    ]]
+  }
+}

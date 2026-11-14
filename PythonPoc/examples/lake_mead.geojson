@@ -1,0 +1,10 @@
+{
+  "type": "Feature",
+  "properties": {"name": "Lake Mead and surroundings (Nevada/Arizona)"},
+  "geometry": {
+    "type": "Polygon",
+    "coordinates": [[
+      [-115.3, 35.7], [-113.7, 35.7], [-113.7, 36.8], [-114.5, 37.0], [-115.3, 36.6], [-115.3, 35.7]
+    ]]
+  }
+}
