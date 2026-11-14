@@ -11,6 +11,7 @@ globe it needs. That keeps queries to a few seconds even for 25 years of data.
 """
 from __future__ import annotations
 
+import os
 import re
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -23,7 +24,8 @@ import xarray as xr
 
 from .catalog import VARIABLES, Variable
 
-DATA_DIR = Path(__file__).resolve().parent.parent / "data"
+# Override with the EARTHTRENDS_DATA_DIR environment variable (the API uses this).
+DATA_DIR = Path(os.environ.get("EARTHTRENDS_DATA_DIR") or Path(__file__).resolve().parent.parent / "data")
 RAW_DIR = DATA_DIR / "raw"
 CUBE_DIR = DATA_DIR / "cubes"
 

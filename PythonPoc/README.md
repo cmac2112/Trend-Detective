@@ -1,5 +1,7 @@
 # Earth Science Trend Detective (data + stats core)
 
+This project for the web api is consumed as a library. However if you want to run the poc yourself see below
+
 Draw a region → get a monthly time series of a NASA Earth science variable → find out
 whether it's trending and whether that trend is statistically significant.
 
@@ -80,3 +82,4 @@ python -m pytest
 ```
 
 The tests use synthetic data with a known trend, so they don't need a download.
+

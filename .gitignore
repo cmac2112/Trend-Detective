@@ -8,3 +8,4 @@ output/
 .netrc
 _netrc
 .dodsrc
+*.egg-info/

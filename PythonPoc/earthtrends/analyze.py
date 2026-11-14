@@ -10,15 +10,21 @@ import pandas as pd
 from . import catalog, data, region, stats
 
 
-def analyze(var_key: str, polygon, da=None) -> dict:
-    """Core function the web API will call. `polygon` is GeoJSON (path, str, or dict)."""
+def analyze(var_key: str, polygon, da=None, start: str | None = None, end: str | None = None) -> dict:
+    """Core function the web API calls. `polygon` is GeoJSON (path, str, or dict).
+    Optional start/end ("YYYY-MM") limit the period analyzed."""
     var = catalog.get(var_key)
     geom = region.load_polygon(polygon)
     if da is None:
         da = data.open_cube(var)
+    if start or end:
+        da = da.sel(time=slice(start, end))
     series, info = region.polygon_mean(da, geom)
+    if series.empty:
+        raise ValueError(f"No {var.name.lower()} data inside this region "
+                         "(land-only variables like soil moisture have no data over the ocean).")
     anomalies, _ = stats.deseasonalize(series)
-    result = stats.trend_stats(series, units=var.units)
+    result = stats.trend_stats(series, units=var.units, percent=var.percent_meaningful)
     return {
         "variable": {"key": var.key, "name": var.name, "units": var.units,
                      "definition": var.definition, "source": f"{var.collection} v{var.version}"},

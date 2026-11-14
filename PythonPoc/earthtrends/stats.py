@@ -30,7 +30,7 @@ def decimal_years(index: pd.DatetimeIndex) -> np.ndarray:
     return (index.year + (index.month - 0.5) / 12).to_numpy(dtype=float)
 
 
-def trend_stats(series: pd.Series, units: str = "") -> dict:
+def trend_stats(series: pd.Series, units: str = "", percent: bool = True) -> dict:
     series = series.dropna().sort_index()
     n = len(series)
     if n < 24:
@@ -74,7 +74,7 @@ def trend_stats(series: pd.Series, units: str = "") -> dict:
             "slope_per_decade": slope_dec,
             "ci95_per_decade": [ci[0] * 10, ci[1] * 10],
             "total_change": fit.slope * years,
-            "percent_of_mean_per_decade": (slope_dec / abs(mean) * 100) if mean else None,
+            "percent_of_mean_per_decade": (slope_dec / abs(mean) * 100) if (percent and mean) else None,
             "r_squared": fit.rvalue ** 2,
             "p_value_naive": float(fit.pvalue),
             "p_value": p_adj,

@@ -20,6 +20,7 @@ class Variable:
     offset: float = 0.0
     group: str | None = None # HDF5 group holding the variable (IMERG uses "Grid")
     related: tuple[str, ...] = field(default_factory=tuple)  # likely drivers / linked variables
+    percent_meaningful: bool = True  # False for interval scales like °C, where "% of mean" is nonsense
 
 
 VARIABLES: dict[str, Variable] = {
@@ -52,6 +53,7 @@ VARIABLES: dict[str, Variable] = {
             source_var="T2M",
             units="°C",
             offset=-273.15,  # Kelvin -> Celsius
+            percent_meaningful=False,
             related=("precip", "soil_moisture", "evapotranspiration"),
         ),
         Variable(
