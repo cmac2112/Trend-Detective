@@ -76,4 +76,6 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=60s --retries=3 \
 # ONE worker on purpose: background jobs, the result cache and rate-limit counters live in
 # memory, so every request has to reach the same process. Scale up (more RAM), not out.
 # The port comes from $PORT (Render sets it); `exec` makes uvicorn receive stop signals.
-CMD ["sh", "-c", "exec uvicorn app.main:app --host 0.0.0.0 --port \"$PORT\" --workers 1 --proxy-headers"]
+# --timeout-keep-alive 120: the host's proxy reuses idle connections for longer than uvicorn's
+# default 5 s; if uvicorn closes one first, the proxy's next request on it fails with a 502.
+CMD ["sh", "-c", "exec uvicorn app.main:app --host 0.0.0.0 --port \"$PORT\" --workers 1 --proxy-headers --timeout-keep-alive 120"]
