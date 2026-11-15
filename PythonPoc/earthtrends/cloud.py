@@ -11,7 +11,9 @@ Measured: 24 years (288 months) of MERRA-2 temperature for the Barents Sea in ~2
 """
 from __future__ import annotations
 
+import os
 import threading
+import time
 import warnings
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
@@ -26,16 +28,40 @@ from shapely.geometry.base import BaseGeometry
 from . import data
 from .catalog import Variable
 
-THREADS = 16  # parallel requests to NASA per analysis
+THREADS = 16  # worker threads per region/variable being streamed
+
+# One limit on requests in flight to NASA for the whole process, shared by every region,
+# variable and user. Comparisons and cause analysis stream several regions/variables at
+# once; this keeps the total polite so NASA doesn't throttle or refuse the token.
+NASA_CONCURRENCY = int(os.environ.get("EARTHTRENDS_NASA_CONCURRENCY", "24"))
+_NASA_SLOTS = threading.BoundedSemaphore(NASA_CONCURRENCY)
+
+# NASA's file search (CMR) takes ~4 s and returns the same list for the same variable and
+# dates, so remember it briefly. New monthly files appear rarely, hence a short lifetime.
+_SEARCH_TTL_S = 15 * 60
+_search_cache: dict[tuple, tuple[float, list]] = {}
+_search_locks: dict[tuple, threading.Lock] = {}
+_search_guard = threading.Lock()
+_grid_lock = threading.Lock()
 
 
 def _granules(var: Variable, start: str, end: str) -> list:
     import earthaccess
 
     data._login(interactive=False)
-    end_ts = pd.Period(end, "M").end_time.strftime("%Y-%m-%d")
-    return earthaccess.search_data(short_name=var.collection, version=var.version,
-                                   temporal=(f"{start}-01", end_ts))
+    key = (var.collection, var.version, start, end)
+    with _search_guard:
+        lock = _search_locks.setdefault(key, threading.Lock())
+    with lock:  # regions searching the same thing at once: one searches, the rest wait
+        hit = _search_cache.get(key)
+        if hit and time.monotonic() - hit[0] < _SEARCH_TTL_S:
+            return hit[1]
+        end_ts = pd.Period(end, "M").end_time.strftime("%Y-%m-%d")
+        found = earthaccess.search_data(short_name=var.collection, version=var.version,
+                                        temporal=(f"{start}-01", end_ts))
+        if found:  # never remember an empty answer
+            _search_cache[key] = (time.monotonic(), found)
+        return found
 
 
 def _opendap_base(granule) -> str:
@@ -107,9 +133,14 @@ def _read_field(nc: netCDF4.Dataset, var: Variable) -> np.ndarray:
 def grid(var: Variable, sample_granule=None) -> tuple[np.ndarray, np.ndarray]:
     """The collection's full lat/lon coordinates, cached on disk after the first call."""
     path = data.DATA_DIR / "grids" / f"{var.collection}.npz"
-    if path.exists():
-        g = np.load(path)
-        return g["lat"], g["lon"]
+    with _grid_lock:  # parallel regions mustn't write the same file at once
+        if path.exists():
+            g = np.load(path)
+            return g["lat"], g["lon"]
+        return _fetch_grid(var, path, sample_granule)
+
+
+def _fetch_grid(var: Variable, path: Path, sample_granule) -> tuple[np.ndarray, np.ndarray]:
     if sample_granule is None:
         sample_granule = _granules(var, var.first_month, var.first_month)[0]
     import earthaccess
@@ -218,7 +249,8 @@ def open_region(var: Variable, geom: BaseGeometry, start: str, end: str,
         last = None
         for _ in range(3):
             try:
-                r = local.session.get(url, timeout=120)
+                with _NASA_SLOTS:
+                    r = local.session.get(url, timeout=120)
                 if r.status_code in (401, 403):  # bad or revoked login: retrying won't help
                     raise data.DataError(
                         f"NASA refused the Earthdata login (HTTP {r.status_code}). The token may be "

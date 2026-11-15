@@ -2,10 +2,16 @@
 __pycache__/
 *.pyc
 .pytest_cache/
-data/
+# Local data: ignored, except the starter examples' tiles (about 34 MB), which the hosted
+# app loads instantly. Everything else (grids, downloads, the ozone file) comes from NASA.
+PythonPoc/data/*
+!PythonPoc/data/tiles/
 output/
 .env
 .netrc
 _netrc
 .dodsrc
 *.egg-info/
+
+# Old Azure App Service scripts and their build output (hosting moved to Render)
+deploy/

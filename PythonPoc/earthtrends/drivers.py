@@ -23,7 +23,7 @@ import pandas as pd
 from scipy import stats as st
 
 from . import catalog, data, region
-from .analyze import analyze, default_range, plan
+from .analyze import analyze, default_range, plan, run_together
 
 MAX_LAG = 3  # months a driver may lead the target
 
@@ -253,24 +253,19 @@ def analyze_drivers(var_key: str, polygon, start: str | None = None, end: str | 
             plans[k] = plan(k, polygon, start, end, source=source)
         except data.DataError:
             plans[k] = {"source": "unavailable", "months": 0}
-    total = sum(p["months"] for p in plans.values() if p["source"] == "cloud")
-    done = 0
+    # the target and its candidate drivers stream at the same time
+    sizes = [plans[k]["months"] if plans[k]["source"] == "cloud" else 0 for k in keys]
+    tasks = [lambda prog, k=k: analyze(k, polygon, start=start, end=end, source=source, progress=prog)
+             for k in keys]
     results: dict[str, dict] = {}
     skipped: dict[str, str] = {}
-    for k in keys:
-        def sub(d: int, n: int, base=done) -> None:
-            if progress and total:
-                progress(min(base + d, total), total)
-        try:
-            results[k] = analyze(k, polygon, start=start, end=end, source=source, progress=sub)
-        except (data.DataError, ValueError) as e:
+    for k, res in zip(keys, run_together(tasks, sizes, progress)):
+        if isinstance(res, Exception):
             if k == var.key:
-                raise
-            skipped[k] = str(e)
-        if plans[k]["source"] == "cloud":
-            done += plans[k]["months"]
-            if progress and total:
-                progress(done, total)
+                raise res
+            skipped[k] = str(res)
+        else:
+            results[k] = res
 
     def anomalies(res: dict) -> pd.Series:
         s = pd.Series({pd.Timestamp(p["date"] + "-01"): p["anomaly"] for p in res["series"]})

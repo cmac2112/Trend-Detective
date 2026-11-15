@@ -9,6 +9,7 @@ disk, so many users can't fill the server's storage.
 """
 from __future__ import annotations
 
+import os
 import threading
 import time
 import uuid
@@ -18,6 +19,18 @@ from typing import Callable
 
 WORKERS = 2
 MAX_JOBS = 50
+# Jobs waiting or running at once, for everyone together. Past this, new jobs are refused
+# (HTTP 503) instead of piling up: a flood can't push real users' jobs out of memory.
+MAX_ACTIVE = int(os.environ.get("MAX_ACTIVE_JOBS", "20"))
+
+
+class Busy(Exception):
+    """Too many jobs are already queued or running."""
+
+
+def active_count() -> int:
+    with _lock:
+        return sum(1 for j in _jobs.values() if j.status in ("queued", "running"))
 
 
 @dataclass
@@ -61,6 +74,9 @@ def submit(variable: str, start: str | None, end: str | None,
     line for other steps. on_error turns an exception into a message."""
     job = Job(id=uuid.uuid4().hex[:12], variable=variable, start=start, end=end)
     with _lock:
+        if sum(1 for j in _jobs.values() if j.status in ("queued", "running")) >= MAX_ACTIVE:
+            raise Busy(f"The server is busy ({MAX_ACTIVE} analyses already waiting or running). "
+                       f"Try again in a minute.")
         _jobs[job.id] = job
         for old in sorted(_jobs.values(), key=lambda j: j.created)[:-MAX_JOBS]:
             _jobs.pop(old.id, None)

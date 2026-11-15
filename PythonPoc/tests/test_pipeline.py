@@ -298,3 +298,27 @@ def test_earthdata_token_login_rules(monkeypatch, tmp_path):
         data._login(interactive=True)
     monkeypatch.setenv("EARTHDATA_ALLOW_PASSWORD", "1")
     assert data.have_credentials()
+
+
+def test_run_together_keeps_order_errors_and_progress():
+    import time
+    from earthtrends.analyze import run_together
+    from earthtrends.data import DataError
+
+    def task(value, delay, fail=False):
+        def fn(progress):
+            for i in range(1, 4):
+                time.sleep(delay)
+                progress(i, 3)
+            if fail:
+                raise DataError("no data here")
+            return value
+        return fn
+
+    seen = []
+    out = run_together([task("a", 0.03), task("b", 0.0, fail=True), task("c", 0.01)],
+                       sizes=[3, 3, 0], progress=lambda d, n: seen.append((d, n)))
+    assert out[0] == "a" and out[2] == "c"          # original order, not finishing order
+    assert isinstance(out[1], DataError)            # one failure doesn't stop the others
+    assert all(n == 6 for _, n in seen) and seen[-1] == (6, 6)
+    assert [d for d, _ in seen] == sorted(d for d, _ in seen)  # never goes backwards

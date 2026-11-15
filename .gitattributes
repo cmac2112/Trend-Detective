@@ -1,0 +1,2 @@
+# Zarr chunks and .npz grids are binary: never let git change their line endings.
+PythonPoc/data/** binary

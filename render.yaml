@@ -1,0 +1,26 @@
+# Render blueprint: the Trend Detective web app + API as one Docker web service.
+# In Render: New → Blueprint → pick this repository. Render reads this file, asks for the
+# secret values marked `sync: false`, builds the Dockerfile and deploys on every push to main.
+services:
+  - type: web
+    name: trend-detective
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    # Oregon: the same area as NASA's Earthdata cloud (AWS us-west-2), so streaming is fast.
+    region: oregon
+    # Starter: 512 MB RAM, always on (keeps the in-memory cache and jobs). Measured peak ~275 MB.
+    plan: starter
+    # ONE instance: jobs, the result cache and rate-limit counters live in memory.
+    numInstances: 1
+    branch: main
+    autoDeploy: true
+    healthCheckPath: /health
+    envVars:
+      # Secrets: Render asks for these when the blueprint is first applied; never in git.
+      - key: EARTHDATA_TOKEN        # NASA Earthdata token (expires after 60 days; see /health)
+        sync: false
+      - key: ANTHROPIC_API_KEY      # Claude explanations (optional)
+        sync: false
+      - key: ADMIN_TOKEN            # for POST /cache/clear (X-Admin-Token header)
+        generateValue: true

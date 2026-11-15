@@ -1,0 +1,52 @@
+{
+  "shape": [
+    57
+  ],
+  "data_type": "float32",
+  "chunk_grid": {
+    "name": "regular",
+    "configuration": {
+      "chunk_shape": [
+        57
+      ]
+    }
+  },
+  "chunk_key_encoding": {
+    "name": "default",
+    "configuration": {
+      "separator": "/"
+    }
+  },
+  "fill_value": "NaN",
+  "codecs": [
+    {
+      "name": "bytes",
+      "configuration": {
+        "endian": "little"
+      }
+    },
+    {
+      "name": "zstd",
+      "configuration": {
+        "level": 0,
+        "checksum": false
+      }
+    }
+  ],
+  "attributes": {
+    "DimensionNames": "lon",
+    "Units": "degrees_east",
+    "units": "degrees_east",
+    "standard_name": "longitude",
+    "LongName": "Longitude at the center of\n\t\t\t0.10 degree grid intervals of longitude \n\t\t\tfrom -180 to 180.",
+    "bounds": "lon_bnds",
+    "axis": "X",
+    "_FillValue": "AAAAAAAA+H8="
+  },
+  "dimension_names": [
+    "lon"
+  ],
+  "zarr_format": 3,
+  "node_type": "array",
+  "storage_transformers": []
+}

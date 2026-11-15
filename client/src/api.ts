@@ -182,7 +182,8 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
       headers: { "Content-Type": "application/json", ...init?.headers },
     });
   } catch {
-    throw new ApiError(0, `Can't reach the API at ${API_URL}. Is it running?`);
+    // API_URL is "" when the API is served from the same address as this page (Azure).
+    throw new ApiError(0, `Can't reach the API at ${API_URL || window.location.origin}. Is it running?`);
   }
   const body = await res.json().catch(() => null);
   if (!res.ok) {

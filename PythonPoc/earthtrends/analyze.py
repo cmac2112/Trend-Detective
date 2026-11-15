@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import threading
 from pathlib import Path
 
 import numpy as np
@@ -102,14 +103,47 @@ def analyze(var_key: str, polygon, da=None, start: str | None = None, end: str |
     return out
 
 
+def run_together(tasks: list, sizes: list[int], progress: data.Progress | None = None) -> list:
+    """Run tasks (each `fn(progress) -> value`) at the same time and return their outcomes in
+    the original order: the value, or the DataError/ValueError it raised.
+
+    `sizes` is how many NASA months each task streams (0 = local or cached); progress is
+    reported as the combined total. NASA requests from all tasks share cloud's process-wide
+    limit, so running them together doesn't multiply the load on NASA."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    total = sum(sizes)
+    done = [0] * len(tasks)
+    lock = threading.Lock()
+
+    def report(i: int, d: int) -> None:
+        if progress and total:
+            with lock:
+                done[i] = min(d, sizes[i]) if sizes[i] else 0
+                progress(sum(done), total)
+
+    def run(i: int):
+        try:
+            value = tasks[i](lambda d, n, i=i: report(i, d))
+        except (data.DataError, ValueError) as e:
+            value = e
+        report(i, sizes[i])
+        return value
+
+    if progress and total:
+        progress(0, total)
+    with ThreadPoolExecutor(max(1, len(tasks)), thread_name_prefix="together") as pool:
+        return list(pool.map(run, range(len(tasks))))
+
+
 def compare(var_key: str, regions: list[dict], start: str | None = None, end: str | None = None,
             source: str = "auto", progress: data.Progress | None = None) -> dict:
     """Analyze one variable over 2-5 regions for the same period.
 
-    `regions` is a list of {"name": str, "region": GeoJSON}. Regions are analyzed one
-    after another (each cloud region already uses 16 parallel requests to NASA), and
-    progress is reported across all of them. A region that fails (e.g. ocean for a
-    land-only variable) gets an `error` entry instead of stopping the comparison."""
+    `regions` is a list of {"name": str, "region": GeoJSON}. Regions are analyzed at the
+    same time (sharing one limit on requests to NASA), and progress is reported across all
+    of them. A region that fails (e.g. ocean for a land-only variable) gets an `error`
+    entry instead of stopping the comparison."""
     var = catalog.get(var_key)
     if not 2 <= len(regions) <= MAX_COMPARE_REGIONS:
         raise ValueError(f"Compare needs 2 to {MAX_COMPARE_REGIONS} regions, got {len(regions)}.")
@@ -117,23 +151,17 @@ def compare(var_key: str, regions: list[dict], start: str | None = None, end: st
     start, end = start or d0, end or d1
 
     plans = [plan(var.key, r["region"], start, end, source=source) for r in regions]
-    total = sum(p["months"] for p in plans if p["source"] == "cloud")
-    offset = 0
+    sizes = [p["months"] if p["source"] == "cloud" else 0 for p in plans]
+    tasks = [lambda prog, r=r: analyze(var.key, r["region"], start=start, end=end,
+                                       source=source, progress=prog)
+             for r in regions]
     items = []
-    for r, p in zip(regions, plans):
-        def sub_progress(done: int, n: int, base=offset) -> None:
-            if progress and total:
-                progress(min(base + done, total), total)
-        try:
-            res = analyze(var.key, r["region"], start=start, end=end, source=source, progress=sub_progress)
+    for r, res in zip(regions, run_together(tasks, sizes, progress)):
+        if isinstance(res, Exception):
+            items.append({"name": r["name"], "error": str(res)})
+        else:
             res.pop("variable", None)
             items.append({"name": r["name"], **res})
-        except (data.DataError, ValueError) as e:
-            items.append({"name": r["name"], "error": str(e)})
-        if p["source"] == "cloud":
-            offset += p["months"]
-            if progress and total:
-                progress(offset, total)
 
     ok = [i for i in items if "error" not in i]
     if not ok:

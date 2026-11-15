@@ -22,9 +22,12 @@ Settings (environment variables):
   EARTHDATA_TOKEN       NASA Earthdata user token   (expires after 60 days)
   EARTHDATA_ALLOW_PASSWORD  1 = also allow ~/_netrc (default 0)
   ANTHROPIC_API_KEY     Claude key for explanations (optional)
+  CLIENT_DIST_DIR       a built React client (client/dist) to serve at "/" from this same
+                        server, as on Azure App Service (default: not served)
 """
 from __future__ import annotations
 
+import hmac
 import json
 import math
 import os
@@ -49,14 +52,16 @@ os.environ.setdefault("EARTHTRENDS_DATA_DIR", str(POC_DIR / "data"))
 
 import pandas as pd  # noqa: E402
 import xarray as xr  # noqa: E402
-from fastapi import FastAPI, HTTPException  # noqa: E402
+from fastapi import FastAPI, Header, HTTPException, Request  # noqa: E402
 from fastapi.middleware.cors import CORSMiddleware  # noqa: E402
+from fastapi.staticfiles import StaticFiles  # noqa: E402
 from pydantic import BaseModel, Field  # noqa: E402
 
 from earthtrends import analyze as engine  # noqa: E402
 from earthtrends import cache, catalog, data, drivers, local, narrative, region  # noqa: E402
 
 from . import jobs  # noqa: E402
+from .ratelimit import RateLimitMiddleware  # noqa: E402
 
 EXAMPLES_DIR = POC_DIR / "examples"
 MONTH = r"^\d{4}-(0[1-9]|1[0-2])$"
@@ -71,6 +76,9 @@ app = FastAPI(
     description="Draw a region, pick a NASA Earth science variable, find out if it's trending.",
     version="0.3.0",
 )
+# Per-IP request limits (see ratelimit.py). Added before CORS so CORS wraps it and
+# 429 answers still reach the browser with a readable message.
+app.add_middleware(RateLimitMiddleware)
 # Browsers only let the listed origins (the React app) call this API.
 # Postman and curl aren't browsers, so CORS doesn't affect them.
 app.add_middleware(
@@ -78,6 +86,7 @@ app.add_middleware(
     allow_origins=CORS_ORIGINS,
     allow_methods=["GET", "POST"],
     allow_headers=["Content-Type"],
+    expose_headers=["Retry-After"],
 )
 
 
@@ -215,9 +224,22 @@ def health():
     }
 
 
+_LOCAL_HOSTS = {"127.0.0.1", "::1", "localhost"}
+
+
 @app.post("/cache/clear")
-def clear_cache():
-    """Forget all cached results (e.g. before a demo, to show a real NASA stream)."""
+def clear_cache(request: Request, x_admin_token: str | None = Header(default=None)):
+    """Forget all cached results (e.g. before a demo, to show a real NASA stream).
+
+    Admin only: send the `X-Admin-Token` header matching the server's ADMIN_TOKEN. With no
+    ADMIN_TOKEN set, it only works from the server itself (localhost)."""
+    expected = os.environ.get("ADMIN_TOKEN", "")
+    if expected:
+        allowed = x_admin_token is not None and hmac.compare_digest(x_admin_token, expected)
+    else:
+        allowed = (request.client.host if request.client else "") in _LOCAL_HOSTS
+    if not allowed:
+        raise HTTPException(403, "Clearing the cache needs the admin token (X-Admin-Token header).")
     cache.RESULTS.clear()
     return cache.RESULTS.stats()
 
@@ -268,13 +290,20 @@ def analyze_region(req: AnalyzeRequest):
         raise HTTPException(422, str(e))
 
 
+def _submit(variable, start, end, work, on_error) -> jobs.Job:
+    try:
+        return jobs.submit(variable, start, end, work=work, on_error=on_error)
+    except jobs.Busy as e:
+        raise HTTPException(503, str(e), headers={"Retry-After": "60"})
+
+
 @app.post("/analyze/jobs", status_code=202)
 def analyze_job(req: AnalyzeRequest):
     """Start an analysis in the background. Poll GET /jobs/{id}: it reports progress
     while streaming from NASA, and holds the full result once `status` is `done`."""
     _validate(req)
     p = _plan(req)
-    job = jobs.submit(req.variable, req.start, req.end,
+    job = _submit(req.variable, req.start, req.end,
                       work=lambda progress: _run(req, progress), on_error=_error_message)
     return {"job": job.to_dict(), "plan": p}
 
@@ -328,7 +357,7 @@ def compare_job(req: CompareRequest):
     """Start a comparison in the background; poll GET /jobs/{id} for progress and the result."""
     regions = _validate_compare(req)
     p = _compare_plan(req, regions)
-    job = jobs.submit(req.variable, req.start, req.end,
+    job = _submit(req.variable, req.start, req.end,
                       work=lambda progress: _run_compare(req, regions, progress), on_error=_error_message)
     return {"job": job.to_dict(), "plan": p}
 
@@ -363,7 +392,7 @@ def explain_drivers_job(req: DriversRequest):
     """Start a cause analysis in the background; poll GET /jobs/{id}."""
     _validate(req)
     p = _plan(req)
-    job = jobs.submit(req.variable, req.start, req.end,
+    job = _submit(req.variable, req.start, req.end,
                       work=lambda progress, say: _run_drivers(req, progress, say), on_error=_error_message)
     return {"job": job.to_dict(), "plan": p}
 
@@ -374,3 +403,13 @@ def get_job(job_id: str):
     if job is None:
         raise HTTPException(404, f"No job '{job_id}' (jobs are kept in memory and cleared on restart)")
     return job.to_dict()
+
+
+# ----------------------------------------------------------------- web client
+
+# On a single-server deploy (Azure App Service) the built React app is served from here too,
+# so the site and the API share one address and need no CORS. Mounted LAST: every API route
+# above is matched first, and only other paths ("/", "/assets/...") fall through to the files.
+CLIENT_DIST_DIR = os.environ.get("CLIENT_DIST_DIR", "").strip()
+if CLIENT_DIST_DIR and (Path(CLIENT_DIST_DIR) / "index.html").is_file():
+    app.mount("/", StaticFiles(directory=CLIENT_DIST_DIR, html=True), name="client")

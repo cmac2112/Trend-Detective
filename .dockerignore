@@ -1,0 +1,27 @@
+# Only what the image needs is sent to the Docker build.
+# Secrets: never send .env or login files into an image.
+**/.env
+**/.env.local
+**/.env.*.local
+**/.netrc
+**/_netrc
+**/.dodsrc
+
+# Environments, caches, build output
+**/.venv
+**/__pycache__
+**/*.pyc
+**/.pytest_cache
+**/*.egg-info
+**/node_modules
+client/dist
+.git
+.dist
+deploy
+
+# Not part of the image
+**/tests
+PythonPoc/output
+PythonPoc/data/raw
+PythonPoc/data/cubes
+*.md

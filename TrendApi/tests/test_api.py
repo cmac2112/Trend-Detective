@@ -34,6 +34,7 @@ def client(monkeypatch, tmp_path):
     monkeypatch.setattr(data, "DATA_DIR", tmp_path)
     monkeypatch.setattr(data, "CUBE_DIR", tmp_path / "cubes")
     monkeypatch.setattr(data, "have_credentials", lambda: True)
+    monkeypatch.setenv("RATE_LIMIT_ENABLED", "0")  # tested on its own below
     # local copy of the POLY area only
     local.save_tile(cube.sel(lat=slice(34, 38), lon=slice(-116, -112)), catalog.get("t2m"), "test_region")
 
@@ -145,7 +146,7 @@ def _wait(client, job_id):
     raise AssertionError("job did not finish")
 
 
-def test_cache_second_request_skips_nasa(client):
+def test_cache_second_request_skips_nasa(client, monkeypatch):
     body = {"variable": "t2m", "region": FAR, "start": "2001-01", "end": "2024-12"}
     first = client.post("/analyze", json=body).json()
     assert first["data_source"]["cached"] is False
@@ -155,7 +156,10 @@ def test_cache_second_request_skips_nasa(client):
     assert second["stats"] == first["stats"]
     health = client.get("/health").json()["cache"]
     assert health["entries"] == 1 and health["hits"] >= 1
-    assert client.post("/cache/clear").json()["entries"] == 0
+    assert client.post("/cache/clear").status_code == 403  # admin only
+    monkeypatch.setenv("ADMIN_TOKEN", "test-admin-token")
+    assert client.post("/cache/clear", headers={"X-Admin-Token": "wrong"}).status_code == 403
+    assert client.post("/cache/clear", headers={"X-Admin-Token": "test-admin-token"}).json()["entries"] == 0
     assert client.post("/plan", json=body).json()["source"] == "cloud"
 
 
@@ -214,3 +218,52 @@ def test_drivers_job(client, monkeypatch):
     assert job["status"] == "done", job
     assert job["result"]["explanation"]["reason"] == "Not requested."
     assert job["result"]["models"]["regression"]["r_squared"] is not None
+
+
+
+def test_rate_limit_per_tier_and_window():
+    from app.ratelimit import RateLimiter, parse_limits, tier_for
+
+    assert parse_limits("2/minute, 3/day") == [(2, 60), (3, 86400)]
+    with pytest.raises(ValueError):
+        parse_limits("lots/minute")
+    assert tier_for("POST", "/compare/jobs") == "analysis"
+    assert tier_for("POST", "/drivers") == "drivers"
+    assert tier_for("GET", "/jobs/abc123") == "poll"
+    assert tier_for("GET", "/variables") == "default"
+    assert tier_for("GET", "/health") is None and tier_for("OPTIONS", "/analyze") is None
+
+    now = [0.0]
+    rl = RateLimiter({"analysis": parse_limits("2/minute,3/day")}, clock=lambda: now[0])
+    assert rl.check("analysis", "1.1.1.1")[0] and rl.check("analysis", "1.1.1.1")[0]
+    ok, retry, limit = rl.check("analysis", "1.1.1.1")
+    assert not ok and limit == "2 per minute" and retry == pytest.approx(60)
+    assert rl.check("analysis", "2.2.2.2")[0]          # other clients are separate
+    now[0] = 61                                          # the minute has passed
+    assert rl.check("analysis", "1.1.1.1")[0]
+    ok, _, limit = rl.check("analysis", "1.1.1.1")     # ...but the day allows only 3
+    assert not ok and limit == "3 per day"
+
+
+def test_rate_limit_answers_429_with_cors(client, monkeypatch):
+    from app import ratelimit
+
+    monkeypatch.setenv("RATE_LIMIT_ENABLED", "1")
+    monkeypatch.setattr(ratelimit, "LIMITER", ratelimit.RateLimiter(
+        {t: ratelimit.parse_limits("2/minute") for t in ratelimit.TIERS}))
+    origin = {"Origin": "http://localhost:5173"}
+    assert client.get("/variables", headers=origin).status_code == 200
+    assert client.get("/variables", headers=origin).status_code == 200
+    r = client.get("/variables", headers=origin)
+    assert r.status_code == 429 and int(r.headers["retry-after"]) >= 1
+    assert "Too many requests" in r.json()["detail"]
+    assert r.headers["access-control-allow-origin"] == "http://localhost:5173"  # browser can read it
+    assert all(client.get("/health").status_code == 200 for _ in range(5))  # probes never limited
+
+
+def test_job_queue_cap(client, monkeypatch):
+    from app import jobs
+
+    monkeypatch.setattr(jobs, "MAX_ACTIVE", 0)
+    r = client.post("/analyze/jobs", json={"variable": "t2m", "region": POLY})
+    assert r.status_code == 503 and "busy" in r.json()["detail"]

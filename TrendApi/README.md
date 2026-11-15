@@ -80,7 +80,7 @@ example new variables in `catalog.py`) don't reach the running server until you 
 | GET | `/jobs/{id}` | Progress of a background analysis or comparison, and its result when done |
 | POST | `/drivers` | **Why is it changing?** Compares the variable with its related variables and has Claude explain the evidence |
 | POST | `/drivers/jobs` | The same cause analysis in the background, with progress |
-| POST | `/cache/clear` | Forget cached results (e.g. to show a live NASA stream in a demo) |
+| POST | `/cache/clear` | Forget cached results (e.g. to show a live NASA stream in a demo). Admin only |
 
 A typical frontend flow:
 1. Call `GET /variables` to fill the variable picker.
@@ -392,8 +392,9 @@ like `/analyze`.
 - If one region can't be analyzed (for example ocean for soil moisture), its entry is
   `{ "name": ..., "error": "..." }` and the other regions still come back.
 - Only if **none** can be analyzed is the response a 422.
-- Regions are analyzed one after another, because each cloud region already uses 16
-  parallel requests to NASA. Two cloud regions take about twice as long as one.
+- Regions are analyzed at the same time. All NASA requests share one limit for the whole
+  server (`EARTHTRENDS_NASA_CONCURRENCY`, default 24), so this doesn't overload NASA.
+  Measured: 3 cloud regions over 10 years take about 15 s, against 40 s one after another.
 
 ### POST /compare/plan and POST /compare/jobs
 
@@ -477,6 +478,13 @@ expect about 1–2 minutes the first time; examples and cached results take a fe
 Empties the result cache and returns the cache statistics. This is handy before a demo, if
 you want to show a region actually streaming from NASA.
 
+Admin only. Send the `X-Admin-Token` header with the server's `ADMIN_TOKEN`. If no
+`ADMIN_TOKEN` is set, it works only from the server itself (localhost); anyone else gets 403.
+
+```powershell
+curl.exe -X POST http://127.0.0.1:8000/cache/clear -H "X-Admin-Token: <your admin token>"
+```
+
 ### GET /jobs/{id}
 
 ```json
@@ -488,7 +496,8 @@ you want to show a region actually streaming from NASA.
 - `status` moves through `queued` -> `running` -> `done`, or ends at `error`, in which case
   `error` says why.
 - When `done`, `result` holds the same JSON that `/analyze` (or `/compare`) returns.
-- Two analyses run at once; more wait in the queue.
+- Two analyses run at once; more wait in the queue. At most 20 can be waiting or running
+  (`MAX_ACTIVE_JOBS`); past that, new jobs get **503** with `Retry-After: 60`.
 - Jobs are kept in memory (the newest 50) and cleared when the server restarts.
 
 ## Settings
@@ -500,6 +509,26 @@ you want to show a region actually streaming from NASA.
 | `EARTHDATA_TOKEN` | – | NASA Earthdata token for streaming from the cloud. Expires after 60 days |
 | `EARTHDATA_ALLOW_PASSWORD` | `0` | `1` also allows the `~/_netrc` username/password login (dev machines only) |
 | `ANTHROPIC_API_KEY` | – | Enables the AI explanation in `/drivers`. Put it in `TrendApi/.env` |
+| `ADMIN_TOKEN` | – | Required in the `X-Admin-Token` header for `POST /cache/clear`. Unset: localhost only |
+| `RATE_LIMIT_ENABLED` | `1` | `0` turns rate limiting off |
+| `RATE_LIMIT_ANALYSIS` | `15/minute,300/day` | Per client IP: `/analyze`, `/compare` and their `/jobs` versions |
+| `RATE_LIMIT_DRIVERS` | `5/minute,50/day` | Per client IP: `/drivers` and `/drivers/jobs` (these call Claude) |
+| `RATE_LIMIT_POLL` | `240/minute` | Per client IP: `GET /jobs/{id}` (the client polls once a second) |
+| `RATE_LIMIT_DEFAULT` | `120/minute` | Per client IP: everything else. `/health` is never limited |
+| `MAX_ACTIVE_JOBS` | `20` | Background jobs waiting or running at once, for all users together |
+
+### Rate limits
+
+Every client IP address gets its own allowance per group of endpoints (table above). Over
+the limit, the API answers **429** with a `Retry-After` header and a message such as
+"Too many analyses from your address (limit: 15 per minute). Try again in 23 s.", which the
+web client shows like any other error. Units: `second`, `minute`, `hour`, `day`; combine
+windows with commas.
+
+The counters are kept in memory, so they reset on restart and assume **one** API process
+(the same reason jobs and the cache need one process). Behind a proxy such as Azure's
+ingress, run uvicorn with `--proxy-headers` (the Dockerfile does), or every user shares the
+proxy's address and one allowance.
 
 ## Try it
 

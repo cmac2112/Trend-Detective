@@ -12,7 +12,7 @@ carbon dioxide.
 | Web client | [`client/`](client/README.md) | React + TypeScript + Vite. The map, drawing tools and charts |
 | API | [`TrendApi/`](TrendApi/README.md) | Python + FastAPI. The web service the client calls (also works with curl or Postman) |
 | Analysis library | [`PythonPoc/`](PythonPoc/README.md) | Python library `earthtrends`. Finds, reads, averages and tests NASA data. Also has a command line |
-| Docs | [`docs/`](docs/) | [Architecture](docs/ARCHITECTURE.md) (with diagrams) and [presentation notes](docs/PRESENTATION.md) |
+| Docs | [`ARCHITECTURE.md`](ARCHITECTURE.md), [`TrendApi/PRESENTATION.md`](TrendApi/PRESENTATION.md) | Architecture (with diagrams) and presentation notes |
 
 ---
 
@@ -103,7 +103,7 @@ shows when the token expires. Interactive API docs are at http://127.0.0.1:8000/
 No NASA access needed; they use synthetic data with a known trend.
 
 ```powershell
-cd PythonPoc; ..\TrendApi\.venv\Scripts\Activate.ps1; python -m pytest   # 22 tests
+cd PythonPoc; ..\TrendApi\.venv\Scripts\Activate.ps1; python -m pytest   # 23 tests
 cd ..\TrendApi; python -m pytest                                         # 14 tests
 ```
 
@@ -116,6 +116,29 @@ cd ..\TrendApi; python -m pytest                                         # 14 te
 | NASA refused the login (HTTP 401/403) | Approve NASA GESDISC DATA ARCHIVE in your Earthdata profile, or make a new token |
 | The browser shows a CORS or network error | Make sure the API is running and the client is on port 5173 |
 | A new variable doesn't appear in the dropdown | Start uvicorn with both `--reload-dir` flags shown above |
+
+---
+
+## Hosting on Render
+
+The site and the API run as **one Render web service** on one address: the `Dockerfile`
+builds the React client, then runs the FastAPI server, which serves the client at `/` and the
+API routes beside it. `render.yaml` describes the service.
+
+1. In Render: **New → Blueprint**, pick this repository. Render reads `render.yaml`.
+2. Enter the secrets it asks for: `EARTHDATA_TOKEN` and `ANTHROPIC_API_KEY` (`ADMIN_TOKEN` is
+   generated for you). They live in Render's environment settings, never in git.
+3. Render builds and deploys, then redeploys on every push to `main`.
+
+- **Plan:** Starter (512 MB RAM, always on), Oregon region, next to NASA's cloud. The API
+  peaks at about 275 MB during a cause analysis.
+- **One instance:** jobs, the result cache and the rate-limit counters live in memory, so
+  scale up (more RAM), not out.
+- **Demo data:** the starter examples' tiles (`PythonPoc/data/tiles`, about 34 MB) are in git
+  so the demo regions load instantly. Everything else streams from NASA.
+- **Versions:** `constraints.txt` pins every package to the versions the tests passed with.
+- **Earthdata token:** it expires after 60 days. `/health` shows the expiry date; replace it in
+  Render's environment settings.
 
 ---
 
@@ -171,7 +194,7 @@ The main libraries are:
 | Statistics | NumPy, pandas, SciPy, pymannkendall |
 | Machine learning | scikit-learn (random forest) |
 | AI explanation | Anthropic's Claude Haiku model, through its Python SDK |
-| Testing | pytest (36 automated tests) |
+| Testing | pytest (37 automated tests) |
 
 The key design choice is **cloud streaming**. Instead of downloading whole global files, the library asks NASA's OPeNDAP service for just the rows and columns that cover the shape. The server never stores user data, so many people can use it without the disk filling up. Example regions are stored locally as compact Zarr files for speed and offline demos.
 
