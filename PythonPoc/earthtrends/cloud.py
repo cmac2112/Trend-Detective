@@ -29,7 +29,7 @@ from shapely.geometry.base import BaseGeometry
 from . import data
 from .catalog import Variable
 
-THREADS = 16  # worker threads per region/variable being streamed
+THREADS = 32  # worker threads per region/variable being streamed
 
 # The netCDF4/HDF5 C library is NOT thread-safe: parsing NASA responses from many threads at
 # once crashes the process (segfault, exit 139 on Linux). Downloads stay parallel; only the
