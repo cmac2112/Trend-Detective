@@ -586,3 +586,28 @@ table caption {
   text-align: left;
   padding: 8px 10px 4px;
 }
+
+/* ---------- footer */
+.sidebar-footer {
+  margin-top: auto; /* pin to the bottom of the sidebar */
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.sidebar-footer .avatar {
+  border-radius: 50%;
+  object-fit: cover;
+  flex: none;
+}
+.footer-links {
+  display: flex;
+  flex-direction: column;
+}
+.sidebar-footer a {
+  color: var(--text-secondary);
+}
+.sidebar-footer a:hover {
+  color: var(--accent);
+}

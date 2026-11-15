@@ -15,3 +15,4 @@ _netrc
 
 # Old Azure App Service scripts and their build output (hosting moved to Render)
 deploy/
+client/package-lock.json

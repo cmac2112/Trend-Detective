@@ -5,6 +5,7 @@ import MapPanel, { type MapHandle } from "./components/MapPanel";
 import Results from "./components/Results";
 import CompareResults from "./components/CompareResults";
 import DriversPanel from "./components/DriversPanel";
+import avatar from "./assets/142555154.jpg";
 import { MAX_REGIONS, SLOT_LETTERS, slotVar, type MapRegion } from "./regions";
 
 const EXAMPLE_LABELS: Record<string, string> = {
@@ -255,6 +256,26 @@ export default function App() {
             <span aria-hidden>✕</span> {error}
           </p>
         )}
+
+        <footer className="sidebar-footer small muted">
+          <img className="avatar" src={avatar} alt="Caden McArthur" width={40} height={40} />
+          <div className="footer-links">
+            <span>Built by Caden McArthur</span>
+            <span>
+              <a href="https://github.com/cmac2112/Trend-Detective" target="_blank" rel="noopener noreferrer">
+                GitHub
+              </a>
+              {" · "}
+              <a href="https://www.linkedin.com/in/cadenmcarthur/" target="_blank" rel="noopener noreferrer">
+                LinkedIn
+              </a>
+              {" · "}
+              <a href="https://www.cadenmcarthur.net" target="_blank" rel="noopener noreferrer">
+                Website
+              </a>
+            </span>
+          </div>
+        </footer>
       </aside>
 
       <main className="main">
