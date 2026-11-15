@@ -15,6 +15,7 @@ import os
 import threading
 import time
 import warnings
+from contextlib import contextmanager
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from urllib.parse import quote
@@ -29,6 +30,27 @@ from . import data
 from .catalog import Variable
 
 THREADS = 16  # worker threads per region/variable being streamed
+
+# The netCDF4/HDF5 C library is NOT thread-safe: parsing NASA responses from many threads at
+# once crashes the process (segfault, exit 139 on Linux). Downloads stay parallel; only the
+# millisecond-long parse of each response takes turns. This is the same lock xarray uses
+# around its own netCDF4/HDF5 calls, so the two never overlap either.
+try:
+    from xarray.backends.locks import HDF5_LOCK as _NC_LOCK
+except ImportError:  # older/newer xarray layout
+    _NC_LOCK = threading.Lock()
+
+
+@contextmanager
+def _netcdf(content: bytes):
+    """Open a NASA response (netCDF4 bytes) in memory, one thread at a time, and always close it.
+    Read everything you need inside the `with` block (arrays read from it are copies)."""
+    with _NC_LOCK:
+        nc = netCDF4.Dataset("inmemory.nc", memory=content)
+        try:
+            yield nc
+        finally:
+            nc.close()
 
 # One limit on requests in flight to NASA for the whole process, shared by every region,
 # variable and user. Comparisons and cause analysis stream several regions/variables at
@@ -150,9 +172,9 @@ def _fetch_grid(var: Variable, path: Path, sample_granule) -> tuple[np.ndarray, 
     url = _opendap_base(sample_granule) + ".dap.nc4?dap4.ce=" + quote(ce, safe="/")
     r = earthaccess.get_requests_https_session().get(url, timeout=120)
     r.raise_for_status()
-    nc = netCDF4.Dataset("inmemory.nc", memory=r.content)
-    lat = np.asarray(_find(nc, var.lat_name)[:], dtype="float64")
-    lon = np.asarray(_find(nc, var.lon_name)[:], dtype="float64")
+    with _netcdf(r.content) as nc:
+        lat = np.asarray(_find(nc, var.lat_name)[:], dtype="float64")
+        lon = np.asarray(_find(nc, var.lon_name)[:], dtype="float64")
     if var.coords_2d:  # AIRS stores a full 2-D lat/lon grid; take the 1-D axes from it
         lat, lon = lat[:, 0], lon[0, :]
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -256,8 +278,8 @@ def open_region(var: Variable, geom: BaseGeometry, start: str, end: str,
                         f"NASA refused the Earthdata login (HTTP {r.status_code}). The token may be "
                         f"revoked or invalid; create a new one at {data.TOKEN_URL}.")
                 r.raise_for_status()
-                nc = netCDF4.Dataset("inmemory.nc", memory=r.content)
-                values = _read_field(nc, var)
+                with _netcdf(r.content) as nc:
+                    values = _read_field(nc, var)
                 month = data.month_from_filename_str(g.data_links()[0])
                 return xr.DataArray(values[None], dims=("time", "lat", "lon"),
                                     coords={"time": [month], "lat": sub_lat, "lon": sub_lon})
