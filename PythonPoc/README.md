@@ -64,7 +64,7 @@ If PowerShell refuses to run `Activate.ps1`, run this once:
 Check that it works without any NASA access (uses synthetic data):
 
 ```powershell
-python -m pytest                     # expect: 21 passed
+python -m pytest                     # expect: 22 passed
 ```
 
 ### 2. NASA Earthdata login (one time)

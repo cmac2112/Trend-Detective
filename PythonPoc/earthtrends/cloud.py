@@ -219,12 +219,18 @@ def open_region(var: Variable, geom: BaseGeometry, start: str, end: str,
         for _ in range(3):
             try:
                 r = local.session.get(url, timeout=120)
+                if r.status_code in (401, 403):  # bad or revoked login: retrying won't help
+                    raise data.DataError(
+                        f"NASA refused the Earthdata login (HTTP {r.status_code}). The token may be "
+                        f"revoked or invalid; create a new one at {data.TOKEN_URL}.")
                 r.raise_for_status()
                 nc = netCDF4.Dataset("inmemory.nc", memory=r.content)
                 values = _read_field(nc, var)
                 month = data.month_from_filename_str(g.data_links()[0])
                 return xr.DataArray(values[None], dims=("time", "lat", "lon"),
                                     coords={"time": [month], "lat": sub_lat, "lon": sub_lon})
+            except data.DataError:
+                raise
             except Exception as e:  # network hiccup: retry
                 last = e
         raise data.DataError(f"NASA request failed for {g.data_links()[0].rsplit('/', 1)[-1]}: {last}")

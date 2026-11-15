@@ -7,8 +7,9 @@ Where data comes from:
     (the example regions, saved with `python -m earthtrends prepare-examples`)
   * otherwise streamed from NASA Earthdata Cloud for that one analysis and never
     stored, so any number of users can't fill the server's disk.
-Streaming needs NASA Earthdata credentials on the server (EARTHDATA_TOKEN or ~/_netrc).
-AI explanations need ANTHROPIC_API_KEY, read from TrendApi/.env (see .env.example).
+Streaming needs a NASA Earthdata token on the server (EARTHDATA_TOKEN).
+AI explanations need ANTHROPIC_API_KEY. Both are read from the environment, or from
+TrendApi/.env on a dev machine (see .env.example).
 
 Run:  uvicorn app.main:app --reload --reload-dir app --reload-dir ../PythonPoc/earthtrends
       (from the TrendApi folder; the two --reload-dir flags make code changes in the
@@ -18,6 +19,9 @@ Docs: http://127.0.0.1:8000/docs
 Settings (environment variables):
   EARTHTRENDS_DATA_DIR  where local data lives      (default ../PythonPoc/data)
   CORS_ORIGINS          comma-separated origins     (default the Vite dev server)
+  EARTHDATA_TOKEN       NASA Earthdata user token   (expires after 60 days)
+  EARTHDATA_ALLOW_PASSWORD  1 = also allow ~/_netrc (default 0)
+  ANTHROPIC_API_KEY     Claude key for explanations (optional)
 """
 from __future__ import annotations
 
@@ -36,6 +40,10 @@ from dotenv import load_dotenv  # noqa: E402
 # Secrets such as ANTHROPIC_API_KEY live in TrendApi/.env (git-ignored).
 # Variables already set in the environment win over the file.
 load_dotenv(API_DIR / ".env", override=False)
+# The server logs in to NASA with EARTHDATA_TOKEN only - never a username/password or
+# ~/_netrc - so a hosted copy holds nothing but a revocable, expiring token.
+# Set EARTHDATA_ALLOW_PASSWORD=1 to allow the old _netrc login on a dev machine.
+os.environ.setdefault("EARTHDATA_ALLOW_PASSWORD", "0")
 # Must be set before earthtrends.data is imported.
 os.environ.setdefault("EARTHTRENDS_DATA_DIR", str(POC_DIR / "data"))
 
@@ -201,6 +209,7 @@ def health():
         "status": "ok",
         "data_dir": str(data.DATA_DIR),
         "cloud_enabled": data.have_credentials(),
+        "earthdata_token": data.token_status(),  # expiry date only, never the token
         "ai_enabled": narrative.has_api_key(),
         "cache": cache.RESULTS.stats(),
     }

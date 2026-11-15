@@ -11,6 +11,7 @@ globe it needs. That keeps queries to a few seconds even for 25 years of data.
 """
 from __future__ import annotations
 
+import math
 import os
 import re
 import shutil
@@ -90,11 +91,48 @@ class DataError(Exception):
 Progress = Callable[[int, int], None]  # (done, total)
 
 
+TOKEN_URL = "https://urs.earthdata.nasa.gov/users/tokens"
+
+
+def _password_allowed() -> bool:
+    """Whether a username/password (env vars or _netrc) may be used when there's no token.
+    The API turns this off (EARTHDATA_ALLOW_PASSWORD=0) so a hosted server only ever
+    holds a token; the command-line PoC keeps it on for convenience."""
+    return os.environ.get("EARTHDATA_ALLOW_PASSWORD", "1").strip().lower() not in ("0", "false", "no")
+
+
+def token_status() -> dict:
+    """What's known about EARTHDATA_TOKEN without contacting NASA (never includes the token).
+    Earthdata tokens are JWTs that expire 60 days after they're created; the expiry date is
+    read from the token itself (not verified - NASA checks the signature on every request)."""
+    import base64
+    import json
+    import time
+
+    token = (os.environ.get("EARTHDATA_TOKEN") or "").strip()
+    if not token:
+        return {"configured": False}
+    status: dict = {"configured": True, "expires": None, "days_left": None, "expired": False}
+    try:
+        payload = token.split(".")[1]
+        claims = json.loads(base64.urlsafe_b64decode(payload + "=" * (-len(payload) % 4)))
+        exp = int(claims["exp"])
+        status["expires"] = pd.Timestamp(exp, unit="s").strftime("%Y-%m-%d")
+        status["days_left"] = math.floor((exp - time.time()) / 86400)
+        status["expired"] = exp <= time.time()
+    except Exception:  # not a JWT we can read: let NASA decide
+        pass
+    return status
+
+
 def have_credentials() -> bool:
     """True if Earthdata credentials are available without prompting anyone."""
-    if os.environ.get("EARTHDATA_TOKEN") or (
-        os.environ.get("EARTHDATA_USERNAME") and os.environ.get("EARTHDATA_PASSWORD")
-    ):
+    tok = token_status()
+    if tok["configured"]:
+        return not tok["expired"]
+    if not _password_allowed():
+        return False
+    if os.environ.get("EARTHDATA_USERNAME") and os.environ.get("EARTHDATA_PASSWORD"):
         return True
     home = Path.home()
     return (home / ".netrc").exists() or (home / "_netrc").exists()
@@ -103,12 +141,20 @@ def have_credentials() -> bool:
 def _login(interactive: bool):
     import earthaccess
 
-    if interactive:
+    tok = token_status()
+    if tok["configured"]:  # a token always wins over a username/password
+        if tok["expired"]:
+            raise DataError(f"The Earthdata token expired on {tok['expires']}. "
+                            f"Create a new one at {TOKEN_URL} and update EARTHDATA_TOKEN.")
+        auth = earthaccess.login(strategy="environment")
+    elif interactive and _password_allowed():
         auth = earthaccess.login(persist=True)  # env vars -> .netrc -> prompt
     else:  # servers must never wait on a password prompt
         if not have_credentials():
-            raise DataError("No Earthdata credentials on this machine (set EARTHDATA_TOKEN or create a _netrc file).")
-        strategy = "environment" if (os.environ.get("EARTHDATA_TOKEN") or os.environ.get("EARTHDATA_USERNAME")) else "netrc"
+            hint = ("set EARTHDATA_TOKEN" if not _password_allowed()
+                    else "set EARTHDATA_TOKEN or create a _netrc file")
+            raise DataError(f"No Earthdata credentials on this machine ({hint}; tokens: {TOKEN_URL}).")
+        strategy = "environment" if os.environ.get("EARTHDATA_USERNAME") else "netrc"
         auth = earthaccess.login(strategy=strategy)
     if not auth or not getattr(auth, "authenticated", False):
         raise DataError("Earthdata login failed. Check your credentials.")

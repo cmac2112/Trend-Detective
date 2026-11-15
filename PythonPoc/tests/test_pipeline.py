@@ -257,3 +257,44 @@ def test_discontinued_record_months():
     assert co2.available_months("2023-01", "2024-12") == []
     with pytest.raises(ValueError, match="only has data from 2015-01 to 2022-02"):
         plan("co2", POLY, "2023-01", "2024-12")
+
+
+def _fake_jwt(exp: int) -> str:
+    import base64, json
+    enc = lambda d: base64.urlsafe_b64encode(json.dumps(d).encode()).decode().rstrip("=")
+    return f"{enc({'alg': 'RS256'})}.{enc({'exp': exp})}.signature"
+
+
+def test_earthdata_token_login_rules(monkeypatch, tmp_path):
+    import time
+    from earthtrends import data
+
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)  # no _netrc here
+    for k in ("EARTHDATA_TOKEN", "EARTHDATA_USERNAME", "EARTHDATA_PASSWORD"):
+        monkeypatch.delenv(k, raising=False)
+
+    # a valid token: expiry read from the token, never echoed back
+    tok = _fake_jwt(int(time.time()) + 30 * 86400)
+    monkeypatch.setenv("EARTHDATA_TOKEN", tok)
+    s = data.token_status()
+    assert s["configured"] and not s["expired"] and s["days_left"] in (29, 30)
+    assert tok not in str(s)
+    assert data.have_credentials()
+
+    # an expired token is refused with a clear message, before contacting NASA
+    monkeypatch.setenv("EARTHDATA_TOKEN", _fake_jwt(int(time.time()) - 86400))
+    assert not data.have_credentials()
+    with pytest.raises(data.DataError, match="expired"):
+        data._login(interactive=False)
+
+    # token-only mode (the API's default) ignores username/password and _netrc
+    monkeypatch.delenv("EARTHDATA_TOKEN")
+    monkeypatch.setenv("EARTHDATA_USERNAME", "someone")
+    monkeypatch.setenv("EARTHDATA_PASSWORD", "secret")
+    monkeypatch.setenv("EARTHDATA_ALLOW_PASSWORD", "0")
+    (tmp_path / "_netrc").write_text("machine urs.earthdata.nasa.gov login x password y")
+    assert not data.have_credentials()
+    with pytest.raises(data.DataError, match="EARTHDATA_TOKEN"):
+        data._login(interactive=True)
+    monkeypatch.setenv("EARTHDATA_ALLOW_PASSWORD", "1")
+    assert data.have_credentials()

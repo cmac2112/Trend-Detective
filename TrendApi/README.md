@@ -13,17 +13,24 @@ FastAPI service that wraps the `earthtrends` core library (in `../PythonPoc`).
   takes about 30 seconds and a few MB of network traffic. Disk use doesn't grow no matter
   how many people use the app.
 
-Streaming needs NASA Earthdata credentials on the server (`EARTHDATA_TOKEN` or `~/_netrc`).
-Local data works without them.
+Streaming needs a **NASA Earthdata token** on the server (`EARTHDATA_TOKEN`). The API
+never uses a username/password or `~/_netrc`, so a hosted copy holds only a token that
+expires and can be revoked. Local data works without it.
 
 **AI explanations** (part of the cause analysis) need an Anthropic API key. Everything else
 works without one.
+
+Both secrets go in `TrendApi/.env` on a dev machine:
 1. Copy `TrendApi/.env.example` to `TrendApi/.env`.
-2. Put your key after `ANTHROPIC_API_KEY=`.
-3. Restart the API: stop uvicorn and start it again, because `--reload` doesn't watch `.env`.
+2. Earthdata token: log in at https://urs.earthdata.nasa.gov/users/tokens, click
+   **Generate Token**, and paste it after `EARTHDATA_TOKEN=`.
+3. Claude key: paste it after `ANTHROPIC_API_KEY=`.
+4. Restart the API: stop uvicorn and start it again, because `--reload` doesn't watch `.env`.
 
 `.env` is git-ignored, and an environment variable that's already set takes priority over
-the file. Check `GET /health`: `ai_enabled` should be `true`.
+the file, so on a host such as Azure you set them as app settings instead. Check
+`GET /health`: `cloud_enabled` and `ai_enabled` should be `true`, and `earthdata_token`
+shows when the token expires (Earthdata tokens last 60 days; the token itself is never shown).
 
 ## Setup
 
@@ -490,7 +497,8 @@ you want to show a region actually streaming from NASA.
 |---|---|---|
 | `EARTHTRENDS_DATA_DIR` | `../PythonPoc/data` | Where local data (example copies) is stored |
 | `CORS_ORIGINS` | `http://localhost:5173,http://127.0.0.1:5173` | Comma-separated browser origins allowed to call the API (the React dev server). Postman and curl aren't affected by CORS |
-| `EARTHDATA_TOKEN` | – | NASA Earthdata token for streaming from the cloud; otherwise `~/_netrc` is used |
+| `EARTHDATA_TOKEN` | – | NASA Earthdata token for streaming from the cloud. Expires after 60 days |
+| `EARTHDATA_ALLOW_PASSWORD` | `0` | `1` also allows the `~/_netrc` username/password login (dev machines only) |
 | `ANTHROPIC_API_KEY` | – | Enables the AI explanation in `/drivers`. Put it in `TrendApi/.env` |
 
 ## Try it

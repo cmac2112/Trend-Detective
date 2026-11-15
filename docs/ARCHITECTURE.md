@@ -100,7 +100,7 @@ Trend-Detective/
 │   │   └── __main__.py        CLI: list / analyze / prepare-examples / fetch
 │   ├── examples/              demo regions as GeoJSON (Barents Sea, Lake Mead, Rondônia)
 │   ├── data/                  (git-ignored) local example data, grids, optional downloads
-│   └── tests/                 21 tests, synthetic data, no network needed
+│   └── tests/                 22 tests, synthetic data, no network needed
 │
 ├── TrendApi/                  WEB API (FastAPI)
 │   ├── app/main.py            endpoints
@@ -425,7 +425,7 @@ Interactive docs run at `http://127.0.0.1:8000/docs`.
 
 | Secret | Used for | Where it lives | Never… |
 |---|---|---|---|
-| NASA Earthdata login | Streaming from NASA's cloud | `~/_netrc` or the `EARTHDATA_TOKEN` env var | Sent to the browser |
+| NASA Earthdata token | Streaming from NASA's cloud | The `EARTHDATA_TOKEN` env var (`TrendApi/.env` on a dev machine); the API never uses a username/password | Sent to the browser or logged; `/health` shows only its expiry date |
 | Anthropic API key | AI explanations | `TrendApi/.env` (git-ignored) | Committed or sent to the browser |
 
 - **CORS:** only the React dev server's address may call the API from a browser.
@@ -438,7 +438,7 @@ Interactive docs run at `http://127.0.0.1:8000/docs`.
 
 | Check | Result |
 |---|---|
-| Automated tests (synthetic data with a planted, known trend) | 21 core + 14 API passing |
+| Automated tests (synthetic data with a planted, known trend) | 22 core + 14 API passing |
 | OCO-2 CO₂ in three very different regions | +24.7 to +25.0 ppm/decade everywhere (a well-mixed gas), ~407 ppm average, as in global records |
 | AIRS satellite vs MERRA-2 model temperature, 2003–2024 | Month-to-month r = 0.88–0.997 in all three demo regions |
 | OMI/MLS ozone values | Typical 20–40 Dobson units, as expected for the lower atmosphere |
@@ -465,7 +465,7 @@ Interactive docs run at `http://127.0.0.1:8000/docs`.
 - More data: sea ice (NSIDC), aerosols and air quality (MERRA-2 aerosols, OMI NO₂), groundwater (GRACE).
 - MODIS terrain or land-cover context when analyzing a region.
 - Cause analysis per region in comparison mode.
-- Deployment: rate limiting, a token-based NASA login, hosting near NASA's cloud (AWS
+- Deployment: rate limiting, hosting near NASA's cloud (AWS
   us-west-2) for faster streaming.
 
 ---
