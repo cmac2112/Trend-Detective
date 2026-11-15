@@ -8,7 +8,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from . import cache, catalog, cloud, data, local, region, stats
+from . import cache, catalog, cloud, data, local, region, stats, trendmap
 
 
 def default_range(var: catalog.Variable) -> tuple[str, str]:
@@ -87,9 +87,14 @@ def analyze(var_key: str, polygon, da=None, start: str | None = None, end: str |
                          "(land-only variables like soil moisture have no data over the ocean).")
     anomalies, _ = stats.deseasonalize(series)
     result = stats.trend_stats(series, units=var.units, percent=var.percent_meaningful)
+    try:
+        tmap = trendmap.trend_map(da, geom, units=var.units)
+    except Exception as e:  # the map is extra; never let it sink the main analysis
+        tmap = {"error": f"Couldn't build the trend map: {e}"}
     out = {
         "variable": {"key": var.key, "name": var.name, "units": var.units,
-                     "definition": var.definition, "source": f"{var.collection} v{var.version}"},
+                     "definition": var.definition, "source": f"{var.collection} v{var.version}",
+                     "global_note": var.global_note},
         "region": info,
         "data_source": {**origin, "cached": False},
         "stats": result,
@@ -97,6 +102,7 @@ def analyze(var_key: str, polygon, da=None, start: str | None = None, end: str |
             {"date": d.strftime("%Y-%m"), "value": float(v), "anomaly": float(a)}
             for d, v, a in zip(series.index, series.to_numpy(), anomalies.to_numpy())
         ],
+        "trend_map": tmap,
     }
     if cache_key:
         cache.RESULTS.put(cache_key, out)
@@ -167,15 +173,25 @@ def compare(var_key: str, regions: list[dict], start: str | None = None, end: st
     if not ok:
         raise ValueError("None of the regions could be analyzed: " + "; ".join(i["error"] for i in items))
     fastest = max(ok, key=lambda i: abs(i["stats"]["linear"]["slope_per_decade"]))
+    # Testing several regions at p < 0.05 makes a lucky "significant" more likely
+    # (5 regions: ~23%), so also report which survive a false-discovery-rate correction.
+    from .trendmap import benjamini_hochberg
+    survives = benjamini_hochberg(np.array([max(i["stats"]["linear"]["p_value"],
+                                                i["stats"]["mann_kendall"]["p_value"]) for i in ok]))
+    for i, keep in zip(ok, survives):
+        i["stats"]["significant_after_correction"] = bool(keep) and i["stats"]["significant"]
     return {
         "variable": {"key": var.key, "name": var.name, "units": var.units,
-                     "definition": var.definition, "source": f"{var.collection} v{var.version}"},
+                     "definition": var.definition, "source": f"{var.collection} v{var.version}",
+                     "global_note": var.global_note},
         "start": start,
         "end": end,
         "regions": items,
         "summary": {
             "analyzed": len(ok),
             "significant": [i["name"] for i in ok if i["stats"]["significant"]],
+            "significant_after_correction": [i["name"] for i in ok
+                                             if i["stats"]["significant_after_correction"]],
             "fastest_change": {"name": fastest["name"],
                                "slope_per_decade": fastest["stats"]["linear"]["slope_per_decade"]},
         },

@@ -147,16 +147,27 @@ def _effective_p(r: float, n: int, x: np.ndarray, y: np.ndarray) -> float:
 
 
 def _best_lag(y: pd.Series, x: pd.Series) -> dict:
-    best = None
+    """The lag (0-MAX_LAG months, driver leading) with the strongest correlation.
+
+    Picking the best of several lags and reporting its p-value as-is would overstate the
+    evidence (four tries at p < 0.05 succeed by luck ~19% of the time), so `p_value` is
+    Bonferroni-corrected for the number of lags tried; `p_value_single_lag` is the raw one."""
+    best, tried = None, 0
     for lag in range(MAX_LAG + 1):
         pair = pd.concat([y, x.shift(lag)], axis=1).dropna()
         if len(pair) < 24:
             continue
+        tried += 1
         a, b = pair.iloc[:, 0].to_numpy(), pair.iloc[:, 1].to_numpy()
         r = float(np.corrcoef(a, b)[0, 1])
         if best is None or abs(r) > abs(best["r"]) + 0.02:  # prefer shorter lags unless clearly better
-            best = {"r": r, "lag_months": lag, "p_value": _effective_p(r, len(pair), a, b), "n": len(pair)}
-    return best or {"r": 0.0, "lag_months": 0, "p_value": 1.0, "n": 0}
+            best = {"r": r, "lag_months": lag, "p_value_single_lag": _effective_p(r, len(pair), a, b),
+                    "n": len(pair)}
+    if best is None:
+        return {"r": 0.0, "lag_months": 0, "p_value": 1.0, "p_value_single_lag": 1.0, "lags_tried": 0, "n": 0}
+    best["lags_tried"] = tried
+    best["p_value"] = min(1.0, best["p_value_single_lag"] * tried)
+    return best
 
 
 def _regression(y: pd.Series, X: pd.DataFrame) -> dict:

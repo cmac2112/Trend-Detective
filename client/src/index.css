@@ -611,3 +611,203 @@ table caption {
 .sidebar-footer a:hover {
   color: var(--accent);
 }
+
+/* ---------- trend map (per-grid-cell trends drawn on the map) */
+.map-wrap {
+  position: relative;
+}
+.trend-legend {
+  position: absolute;
+  left: 10px;
+  bottom: 10px;
+  z-index: 800; /* above Leaflet panes, below its controls' popups */
+  width: 230px;
+  max-width: calc(100% - 20px);
+  padding: 8px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--surface-raised);
+  color: var(--text-primary);
+  font-size: 0.78rem;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.trend-legend-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 6px;
+  cursor: pointer;
+}
+.trend-legend-head input {
+  width: auto;
+  margin: 0;
+}
+.trend-ramp {
+  height: 10px;
+  border-radius: 4px;
+}
+.trend-ramp-labels {
+  display: flex;
+  justify-content: space-between;
+  font-variant-numeric: tabular-nums;
+}
+.trend-key {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-secondary);
+}
+/* Swatches show the cell fill as it looks on the (always light) map tiles, in both themes. */
+.trend-key-swatch {
+  width: 12px;
+  height: 12px;
+  border-radius: 2px;
+  background: linear-gradient(rgba(227, 73, 72, 0.85), rgba(227, 73, 72, 0.85)), #f2efe9;
+}
+.trend-key-swatch.faded {
+  background: linear-gradient(rgba(227, 73, 72, 0.35), rgba(227, 73, 72, 0.35)), #f2efe9;
+  margin-left: 6px;
+}
+.leaflet-tooltip.trend-tip {
+  font-size: 0.8rem;
+  line-height: 1.35;
+}
+.leaflet-tooltip.trend-tip .muted {
+  color: #52514e;
+}
+.back-btn {
+  align-self: flex-start;
+}
+.scan-table .scan-name {
+  font-weight: 600;
+  white-space: normal;
+}
+.scan-table td {
+  vertical-align: top;
+}
+.downloads {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+.callout.wait {
+  border-color: var(--axis);
+}
+.wait-action {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+/* ---------- detective questions */
+.detective {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 8px 10px;
+  margin-bottom: 10px;
+  background: var(--surface);
+}
+.detective summary {
+  cursor: pointer;
+  font-size: 0.9rem;
+  font-weight: 600;
+}
+.detective .q {
+  margin: 10px 0 6px;
+  color: var(--text-secondary);
+}
+.chip-on {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 14%, var(--surface-raised));
+}
+.ideas {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.idea {
+  width: 100%;
+  text-align: left;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  background: var(--surface-raised);
+  color: var(--text-primary);
+  border-color: var(--border);
+  padding: 6px 10px;
+}
+.idea:hover {
+  background: var(--neutral-bg);
+}
+.idea-on {
+  border-color: var(--accent);
+}
+.idea-tag {
+  color: var(--text-secondary);
+  margin-top: 2px;
+}
+
+/* ---------- guided demo */
+.tour-start {
+  margin-top: 8px;
+}
+.tour-card {
+  position: fixed;
+  right: 20px;
+  bottom: 20px;
+  z-index: 2000;
+  width: 360px;
+  max-width: calc(100vw - 32px);
+  background: var(--surface-raised);
+  color: var(--text-primary);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 14px 16px;
+  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.25);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.tour-card p {
+  margin: 0;
+}
+.tour-head,
+.tour-actions {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+}
+.tour-actions {
+  justify-content: flex-end;
+}
+.tour-target {
+  outline: 3px solid var(--accent);
+  outline-offset: 3px;
+  border-radius: 8px;
+  transition: outline-color 0.2s;
+}
+tr.tour-target {
+  outline-offset: -3px;
+}
+@media (max-width: 860px) {
+  .tour-card {
+    left: 16px;
+    right: 16px;
+    bottom: 16px;
+    width: auto;
+  }
+}
+.scan-table td:nth-child(2),
+.scan-table td:nth-child(7) {
+  white-space: normal;
+  min-width: 96px;
+}

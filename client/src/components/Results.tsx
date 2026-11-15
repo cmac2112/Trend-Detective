@@ -1,5 +1,6 @@
-import type { AnalyzeResult } from "../api";
+import { hasMap, type AnalyzeResult } from "../api";
 import TrendCharts from "./TrendCharts";
+import { downloadSeries, downloadTrendMap } from "../download";
 import { trendLevel } from "../trend";
 
 const BADGE = {
@@ -12,11 +13,21 @@ const num = (v: number | null | undefined, digits = 3) =>
   v == null ? "–" : `${v >= 0 ? "+" : ""}${v.toPrecision(digits)}`;
 const p = (v: number) => (v < 0.001 ? "< 0.001" : v.toFixed(3));
 
-export default function Results({ result }: { result: AnalyzeResult }) {
+interface Props {
+  result: AnalyzeResult;
+  regionName: string;
+  /** First month the dataset has data, to offer a longer record. */
+  dataStarts?: string;
+  /** Re-run from an earlier start month. */
+  onExtend?: (start: string) => void;
+}
+
+export default function Results({ result, regionName, dataStarts, onExtend }: Props) {
   const { stats: s, variable: v, region } = result;
   const lin = s.linear;
   const level = trendLevel(result);
   const badge = BADGE[level];
+  const tmap = hasMap(result.trend_map) ? result.trend_map : null;
 
   return (
     <section className="results" aria-label="Results">
@@ -27,7 +38,7 @@ export default function Results({ result }: { result: AnalyzeResult }) {
         <p>{s.verdict}</p>
       </div>
 
-      <div className="tiles">
+      <div className="tiles" data-tour="tiles">
         <div className="tile">
           <div className="tile-label">Change per decade</div>
           <div className="tile-value">
@@ -58,6 +69,46 @@ export default function Results({ result }: { result: AnalyzeResult }) {
         </div>
       </div>
 
+      {level !== "significant" && s.detection?.more_years != null && (
+        <div className="callout wait">
+          <strong>⏳ How long until we'd know?</strong>{" "}
+          {s.detection.more_years > 100
+            ? "At this rate it would take over a century of data to tell this trend apart from natural ups and downs."
+            : s.detection.more_years < 1
+              ? "A trend this size is normally detectable with this much data, so it's probably weaker than it looks."
+              : `If it carries on at this rate, about ${Math.round(s.detection.more_years)} more years of data (${Math.round(
+                  s.detection.years_needed ?? 0,
+                )} in total) would give a 90% chance of a significant result.`}{" "}
+          <span className="small muted" title={s.detection.method}>
+            (Weatherhead et al. 1998)
+          </span>
+          {dataStarts && onExtend && dataStarts < s.start && s.detection.more_years >= 1 && s.detection.more_years <= 100 && (
+            <div className="wait-action">
+              <span className="small">
+                This dataset goes back to <strong>{dataStarts}</strong>, so you don't have to wait:
+              </span>
+              <button type="button" className="secondary small" onClick={() => onExtend(dataStarts)}>
+                Re-run from {dataStarts}
+              </button>
+            </div>
+          )}
+        </div>
+      )}
+
+      {v.global_note && (
+        <p className="callout">
+          <strong>🌍 A worldwide trend.</strong> {v.global_note}
+        </p>
+      )}
+
+      {tmap && tmap.summary.cells_with_trend > 1 && (
+        <div className={`callout ${tmap.summary.mixed ? "warn" : ""}`}>
+          <strong>{tmap.summary.mixed ? "↕ Where is it changing? Not everywhere the same way." : "Where is it changing?"}</strong>{" "}
+          {tmap.summary.description}{" "}
+          <span className="muted small">The map above colours every grid cell by its own trend.</span>
+        </div>
+      )}
+
       <TrendCharts result={result} />
 
       <p className="muted small">
@@ -70,6 +121,17 @@ export default function Results({ result }: { result: AnalyzeResult }) {
         </span>{" "}
         {region.cells_with_data} grid cells averaged · {s.n_months} months · dataset {v.source}
       </p>
+      <div className="downloads">
+        <span className="small muted">Download CSV:</span>
+        <button type="button" className="secondary small" onClick={() => downloadSeries(result, regionName)}>
+          ⤓ Monthly data
+        </button>
+        {tmap && (
+          <button type="button" className="secondary small" onClick={() => downloadTrendMap(tmap, v.key, regionName)}>
+            ⤓ Trend map (one row per grid cell)
+          </button>
+        )}
+      </div>
     </section>
   );
 }

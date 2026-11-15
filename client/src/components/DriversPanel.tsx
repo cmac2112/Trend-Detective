@@ -70,7 +70,7 @@ export default function DriversPanel({ variable, variableName, region, regionNam
   const running = job !== null;
 
   return (
-    <section className="drivers" aria-label="Possible causes">
+    <section className="drivers" aria-label="Possible causes" data-tour="drivers">
       <div className="drivers-head">
         <div>
           <h2 className="section-title">Why is it changing?</h2>
@@ -211,7 +211,9 @@ function EvidenceTable({ drivers, units }: { drivers: DriverEvidence[]; units: s
                   </span>
                   {signed(d.correlation.r)}
                   <div className="tiny muted">
-                    p {pval(d.correlation.p_value)}
+                    <span title={d.correlation.lags_tried > 1 ? `Adjusted for trying ${d.correlation.lags_tried} time lags and keeping the best one` : undefined}>
+                      p {pval(d.correlation.p_value)}
+                    </span>
                     {d.correlation.lag_months > 0 ? ` · ${d.correlation.lag_months}-month lead` : ""}
                   </div>
                 </td>

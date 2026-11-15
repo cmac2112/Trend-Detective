@@ -148,14 +148,18 @@ API routes beside it. `render.yaml` describes the service.
 
 Trend Detective lets anyone draw a shape on a map, pick a NASA Earth-science variable, and find out whether that place is really changing, how fast, and what might be driving it.
 
-NASA holds decades of satellite and model data on rainfall, temperature, vegetation, soil moisture, ozone and carbon dioxide. Asking a simple question of it, like "is my watershed getting drier?", normally means finding the right product, downloading gigabytes of global files, cutting out a region and running statistics by hand. Trend Detective turns that into four steps in a web browser:
+NASA holds decades of satellite and model data on rainfall, temperature, vegetation, soil moisture, ozone and carbon dioxide. Asking a simple question of it, like "is my watershed getting drier?", normally means finding the right product, downloading gigabytes of global files, cutting out a region and running statistics by hand. Trend Detective turns that into a few steps in a web browser:
 
 1. **Draw.** Sketch up to five regions on an interactive map, labeled A to E. A region can be a farm, a lake basin, a rainforest or a patch of the Arctic Ocean.
-2. **Detect.** Choose one of 15 variables and a date range. The app builds a monthly time series for each region by averaging every NASA pixel inside the shape, weighted by area. It plots the series with a fitted trend line and reports the rate of change per decade, a confidence interval and a plain verdict: significant or not.
-3. **Compare.** Plot several regions on one chart over the same period. Is the Amazon warming as fast as the Arctic? Is one basin drying while its neighbor holds steady?
-4. **Explain.** Ask why the trend is happening. The app tests the other NASA variables over the same region as possible drivers and ranks them by how much of the trend each one accounts for. Claude, an AI model, then writes a short, plain-language explanation that sticks to what the evidence supports.
+2. **Discover.** Not sure what to look at? Answer two questions ("What kind of place?" and "What are you curious about?") to get suggested variables, or **scan** all 15 variables at once and see them ranked by how clearly they're changing.
+3. **Detect.** Choose a variable and a date range. The app builds a monthly time series for each region by averaging every NASA pixel inside the shape, weighted by area. It plots the series with a fitted trend line and reports the rate of change per decade, a confidence interval and a plain verdict: significant or not. If it isn't significant yet, it estimates how many more years of data would settle it.
+4. **Locate.** A trend map colors every grid cell inside the shape by its own trend, so you can see *where* the change is happening, including places where part of a region rises while another part falls.
+5. **Compare.** Plot several regions on one chart over the same period. Is the Amazon warming as fast as the Arctic? Is one basin drying while its neighbor holds steady?
+6. **Explain.** Ask why the trend is happening. The app tests the other NASA variables over the same region as possible drivers and ranks them by how much of the trend each one accounts for. Claude, an AI model, then writes a short, plain-language explanation that sticks to what the evidence supports.
 
 The variables come from all six sources the challenge names (MODIS, OMI, AIRS, GPM, MERRA-2 and GLDAS), plus NASA's OCO-2 satellite for carbon dioxide.
+
+New users can click **Watch a guided demo**: the app runs the Rondônia (Amazon) investigation live, one step at a time, explaining each result as it appears. Every result can be downloaded as CSV.
 
 ### Benefits
 
@@ -194,7 +198,7 @@ The main libraries are:
 | Statistics | NumPy, pandas, SciPy, pymannkendall |
 | Machine learning | scikit-learn (random forest) |
 | AI explanation | Anthropic's Claude Haiku model, through its Python SDK |
-| Testing | pytest (37 automated tests) |
+| Testing | pytest (53 automated tests) |
 
 The key design choice is **cloud streaming**. Instead of downloading whole global files, the library asks NASA's OPeNDAP service for just the rows and columns that cover the shape. The server never stores user data, so many people can use it without the disk filling up. Example regions are stored locally as compact Zarr files for speed and offline demos.
 
@@ -204,7 +208,8 @@ No special hardware was needed. I built and ran everything on a single Windows l
 
 - **It answers "why", not just "what".** Most Earth-data viewers stop at a chart. Trend Detective tests other variables as possible causes. It uses three methods that check each other: lagged correlation (does rainfall lead vegetation by a few months?), regression (what share of the trend does each driver account for?) and a random forest scored on held-out years. Each driver gets an evidence label from strong to weak.
 - **AI with guardrails.** Claude never looks at raw data and never makes up a cause. It receives only the computed statistics plus a table of known physical mechanisms, and returns a structured explanation. If the AI is unavailable, the statistics still stand on their own.
-- **Statistics that refuse to overclaim.** The app shows a verdict of "not significant" just as clearly as "significant". It admits uncertainty instead of hiding it.
+- **Statistics that refuse to overclaim.** The app shows a verdict of "not significant" just as clearly as "significant", and says how many more years of data would likely change that (Weatherhead et al. 1998). Whenever it tests many things at once (thousands of grid cells, 15 variables, several regions), it corrects for lucky results.
+- **"What" and "where", not just "whether".** A scan ranks every variable for a place, and a per-pixel trend map shows where inside the shape the change is happening. In Rondônia, vegetation falls significantly in 1,139 grid cells and rises in 278, which one regional average would hide.
 - **Seven instruments as one.** Data from satellites, weather models and land models normally sits in incompatible formats. Here they share one map, one chart and one set of tests, so a user can check a satellite against a model in a single click.
 - **Shape-first.** Users ask about the place they care about, drawn freehand, not a fixed grid box or a country border.
 

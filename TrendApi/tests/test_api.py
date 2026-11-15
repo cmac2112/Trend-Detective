@@ -267,3 +267,34 @@ def test_job_queue_cap(client, monkeypatch):
     monkeypatch.setattr(jobs, "MAX_ACTIVE", 0)
     r = client.post("/analyze/jobs", json={"variable": "t2m", "region": POLY})
     assert r.status_code == 503 and "busy" in r.json()["detail"]
+
+
+def test_analyze_includes_trend_map(client):
+    res = client.post("/analyze", json={"variable": "t2m", "region": POLY}).json()
+    m = res["trend_map"]
+    assert m["summary"]["cells"] == 16
+    assert len(m["slope_per_decade"]) == len(m["lat"]) and len(m["slope_per_decade"][0]) == len(m["lon"])
+    slim = client.post("/analyze", json={"variable": "t2m", "region": POLY, "include_map": False}).json()
+    assert "trend_map" not in slim
+
+
+def test_scan_job(client):
+    plan = client.post("/scan/plan", json={"region": POLY, "start": "2001-01", "end": "2024-12"}).json()
+    assert {v["key"] for v in plan["variables"]} >= {"t2m", "precip"}
+    r = client.post("/scan/jobs", json={"region": POLY, "start": "2001-01", "end": "2024-12"})
+    assert r.status_code == 202
+    job = _wait(client, r.json()["job"]["id"])
+    assert job["status"] == "done", job["error"]
+    items = job["result"]["variables"]
+    assert [i["rank"] for i in items] == list(range(1, len(items) + 1))
+    first = items[0]
+    # opening a scanned variable is a cache hit
+    again = client.post("/plan", json={"variable": first["key"], "region": POLY,
+                                       "start": first["start"], "end": first["end"]}).json()
+    assert again["source"] == "cache"
+
+
+def test_scan_rate_tier():
+    from app import ratelimit
+    assert ratelimit.tier_for("POST", "/scan/jobs") == "scan"
+    assert ratelimit.tier_for("POST", "/scan/plan") == "default"

@@ -38,16 +38,19 @@ has a plain-English verdict, and the statistics are there for anyone who wants t
 
 | Challenge objective | What Trend Detective does |
 |---|---|
-| Identify Earth-science variables that may show trends | 15 variables from **all six named sources (MODIS, OMI, AIRS, GPM, MERRA-2, GLDAS)** plus **OCO-2** carbon dioxide, grouped by topic, each with a student-friendly definition |
+| Identify Earth-science variables that may show trends | 15 variables from **all six named sources (MODIS, OMI, AIRS, GPM, MERRA-2, GLDAS)** plus **OCO-2** carbon dioxide, each with a student-friendly definition. **Scan** tests all 15 on a region and ranks what's changing |
+| *What* is changing, *where*, *how much* | Scan (what), **per-grid-cell trend map** (where), change per decade with 95% range and % of average (how much) |
 | Acquire data for a particular region | Draw any polygon or rectangle; I stream **only that region** from NASA Earthdata Cloud |
 | Generate and visualize a time series | Monthly series, seasonal-removed anomalies, trend line, data table |
 | Rate of change + significance (t-test, Mann-Kendall, confidence intervals) | **All three**: slope per decade with 95% CI, an autocorrelation-adjusted t-test **and** Mann-Kendall; "significant" only when both agree |
-| Same process, opposite trends in different regions | **Compare up to 5 regions** side by side |
+| Same process, opposite trends in different regions | The **trend map** shows opposite trends *inside* one region; **Compare** shows them across up to 5 regions |
 | Seasonal cycles hide trends | Seasonal cycle removed before every test |
-| "A trend may need a longer record to become significant" | Change the years and watch significance change (Lake Mead demo) |
-| Audience: students, data detectives | Plain-language verdicts and definitions, guided 3-step sidebar, one-click examples |
+| "A trend may need a longer record to become significant" | For non-significant trends the app **estimates how many more years** would be needed (Weatherhead et al. 1998), with a one-click re-run on the dataset's longer record |
+| Audience: students, data detectives | Plain-language verdicts and definitions, guided 3-step sidebar, one-click examples, CSV downloads |
+| Approach: a short series of questions about what or where to investigate | **Detective questions**: "What kind of place?" + "Curious about?" → suggested variables, each with a reason |
 | Optional: AI to suggest causes | Cause analysis (correlation, regression, machine learning) + **Claude** explaining the evidence for students |
-| Demonstration examples | Three built-in demo regions that work offline |
+| Demonstration examples the user could **watch** | **"Watch a guided demo"**: the Rondônia story runs live, step by step, plus three built-in regions that work offline |
+| Optional: CUAHSI hydrology tools | CSV export of series and per-cell trends loads into HydroShare and other tools |
 
 ---
 
@@ -86,12 +89,32 @@ has a plain-English verdict, and the statistics are there for anyone who wants t
 - Up to 5 regions, each with its own colour, on the same charts and table.
 - Example: Arctic, desert and rainforest all warming significantly, at different rates.
 
+### D2. What is changing, and where? Scan + trend map
+
+- **Scan** answers "what's changing here?" before the student has to guess: all 15
+  variables, ranked by significance and by size relative to normal ups and downs.
+- The **trend map** answers "where?": every grid cell gets its own trend. In Rondônia,
+  vegetation greenness falls significantly in 1,139 cells and *rises* in 278: patches of
+  clearing among regrowth, which one regional number hides.
+- **Multiple testing handled honestly:** testing thousands of cells (or 15 variables, or 5
+  regions) produces lucky "significant" results. The app corrects for that (false
+  discovery rate) everywhere it tests many things at once.
+
+### D3. "Not significant yet" isn't the end
+
+- For a trend that isn't significant, the app says **how many more years** of data would
+  likely make it significant (Weatherhead et al. 1998), checked by simulation: 91–93%
+  detection at the predicted length.
+- Lake Mead 2015–2024: not significant, "about 29 more years". Over 2001–2024: significant.
+
 ### E. "Why is it changing?" Honest cause analysis
 
 - **Statistics first, AI second.** I compute correlations, a regression and a random
   forest; Claude explains **those numbers**. It doesn't invent its own.
 - **Direction matters.** Correlation doesn't show cause, so I encode known physics (rain
   drives soil moisture, not the reverse).
+- **No cherry-picked lags.** Each driver's best 0–3 month lead is chosen, and its p-value
+  is corrected for having tried four.
 - **The model grades itself.** If the machine-learning model can't predict unseen years,
   I say its scores are unreliable instead of hiding it.
 - **Data vs outside knowledge** are labeled separately: "shown by the data" vs "outside
@@ -109,7 +132,7 @@ has a plain-English verdict, and the statistics are there for anyone who wants t
 
 ### G. Built to be trusted
 
-- 37 automated tests with synthetic data where the true answer is known.
+- 53 automated tests with synthetic data where the true answer is known.
 - Cloud-streamed values verified identical to NASA's full files.
 - Units checked with physics: Rondônia's water budget (rain − evaporation = runoff)
   closes at 1.02.
@@ -118,6 +141,13 @@ has a plain-English verdict, and the statistics are there for anyone who wants t
 ---
 
 ## 4. Demo script (target: 3 minutes)
+
+**Option A (recommended): the built-in guided demo.** Click **▶ Watch a guided demo** and
+narrate over its 7 steps: Rondônia → detective questions → scan → greenness clue → trend
+map → statistics → causes. Then use the remaining time on Lake Mead's "how many more
+years?" (step 9 below) and the close. It runs offline from the saved example data.
+
+**Option B: by hand**, as below.
 
 > Before presenting: run the **Pre-demo checklist** (section 7). Use the built-in examples:
 > they load instantly and work offline.
@@ -132,7 +162,7 @@ has a plain-English verdict, and the statistics are there for anyone who wants t
 | 6 | 1:30 | Remove Barents and Lake Mead → Rondônia → Analyze → **Investigate causes** | "Now the detective part: *why* is Rondônia warming?" |
 | 7 | 1:50 | Evidence table | "The strongest links are **drying soil** and **declining vegetation**: MODIS shows the land getting less green. Dry, bare ground can't cool itself by evaporating water." |
 | 8 | 2:15 | AI card | "Claude turns that evidence into plain language, and separates what the data shows from outside knowledge like deforestation." |
-| 9 | 2:35 | (Optional) Lake Mead with years 2015–2024 | "Over 10 years the desert warming *isn't* significant; over 24 years it is. Sometimes a trend just needs a longer record, exactly as the challenge says." |
+| 9 | 2:35 | Lake Mead, air temperature, 2015–2024 → Analyze | "Over 10 years the desert warming *isn't* significant, and the app estimates about **29 more years** would be needed. Over 2001–2024 it is significant. Sometimes a trend just needs a longer record, exactly as the challenge says." |
 | 10 | 2:50 | Close | "Any region, 15 variables from seven NASA instruments and models, honest statistics: become a data detective." |
 
 **Backup plan:** if the network fails, everything above still works (local data + cache),
@@ -148,6 +178,11 @@ except the AI card, which shows the evidence with a short note instead.
 | Rondônia air temperature | **+0.81 °C/decade**, p < 0.001 | |
 | Lake Mead air temperature | **+0.38 °C/decade** 2001–2024 (significant); not significant over 2015–2024 (p = 0.67) | The "longer record" lesson |
 | Rondônia vegetation (MODIS NDVI) | Declining significantly | Consistent with deforestation and drying |
+| Rondônia vegetation, per grid cell | 1,139 cells falling and 278 rising significantly (of 2,292) | Trend map: opposite trends inside one region |
+| Rondônia rainfall, per grid cell | 98% of cells falling significantly | The drying is region-wide |
+| Barents Sea temperature, per grid cell | 86% of 861 cells warming significantly | |
+| Lake Mead air temperature 2015–2024 | Not significant; ~29 more years needed (Weatherhead) | Significant over 2001–2024 |
+| Rondônia scan | 11 of 14 variables significant, all surviving the correction for testing 14 | |
 | Rondônia warming ↔ soil moisture | r = −0.67 | Strongest driver |
 | Rondônia warming ↔ vegetation | r = −0.53 | Second-strongest driver |
 | Data moved for 24 years of temperature | ~10 MB instead of ~17 GB | Cloud subsetting |
@@ -169,13 +204,15 @@ endpoints affect trends, if a judge asks.
 | *How do you know a trend is real and not noise?* | Seasonal removal, then two independent tests that must both agree, with the t-test corrected for autocorrelation. I show the 95% range too. |
 | *Isn't correlation not causation?* | Exactly, and the app says so. I encode physical mechanisms and their direction, label evidence strength, separate data from outside knowledge, and list unmeasured factors. |
 | *Why trust the AI?* | It only explains numbers I computed, through a fixed output format; it never produces the statistics. Without it, the evidence still stands on its own. |
+| *If you test thousands of grid cells, won't some be "significant" by chance?* | Yes, about 1 in 20 at p < 0.05. That's why map cells are only marked significant after a false-discovery-rate correction (Benjamini–Hochberg), and the same goes for scans and comparisons. On pure noise, the corrected map shows essentially no significant cells. |
+| *How do you know how many more years a trend needs?* | Weatherhead et al. (1998), the standard formula in climate trend detection: trend size, noise and autocorrelation give the record length for a 90% chance of detection. Simulations with my own test hit 91–93%. |
 | *What about non-linear trends?* | Out of the challenge's scope by design; I fit linear trends and Mann-Kendall (which doesn't need linearity). Non-linear methods are a natural next step. |
 | *How does it scale to many users?* | No per-user storage: I stream only the region from NASA's cloud and cache results in memory. Per-IP rate limits and a cap on queued jobs stop abuse; in production, host next to NASA's cloud. |
 | *Why these datasets?* | They're all six named in the challenge, covering water, temperature, vegetation, atmosphere and air quality. Each is monthly, gridded and about 20+ years long. |
 | *Do satellite and model data agree?* | On the month-to-month ups and downs, very closely (AIRS vs MERRA-2 temperature: r = 0.88–0.997). On the **size** of trends, not always: Rondônia warms +0.36 °C/decade in AIRS vs +0.86 in MERRA-2. Showing that honestly is part of being a data detective; the app lets you compare both. |
 | *Why monthly data?* | The challenge recommends daily or monthly, and monthly gives 288 points over 24 years: enough for robust tests, fast to stream. |
 | *Reanalysis vs satellite?* | Satellites (MODIS, GPM) measure directly; reanalysis and land models (MERRA-2, GLDAS) fill gaps consistently. I cross-check where possible (e.g. rainfall). |
-| *What would you add next?* | Sea ice for the Arctic story, aerosols and NO₂ for cities, groundwater (GRACE), terrain and land-cover context, guided tours. |
+| *What would you add next?* | Sea ice for the Arctic story, aerosols and NO₂ for cities, groundwater (GRACE), terrain and land-cover context, an upper-atmosphere level (MERRA-2 at 250 hPa). |
 
 ---
 
@@ -185,6 +222,8 @@ endpoints affect trends, if a judge asks.
 - [ ] Start the client: `cd client` → `npm run dev` → open http://localhost:5173 (must be port 5173)
 - [ ] `http://127.0.0.1:8000/health` shows `cloud_enabled: true` and `ai_enabled: true`
 - [ ] Run the full demo once beforehand, so every step is cached and instant
+- [ ] Click through **▶ Watch a guided demo** once (it's instant from the saved Rondônia data)
+- [ ] Note: "Re-run from 1980" streams from NASA (the saved examples cover 2001–2024), so it needs the network
 - [ ] Optional: `POST /cache/clear` (with the `X-Admin-Token` header, or from the server itself) if you *want* to show a live NASA stream (~30 s)
 - [ ] Anthropic spend limit set in the Claude Console; API key **not** visible on screen
 - [ ] Browser zoom and window size set so the map and results fit the projector

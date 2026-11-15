@@ -39,6 +39,9 @@ class Variable:
     combine: str = "sum"             # how `components` combine: "sum", or "mean" (ignores a missing one)
     coords_2d: bool = False          # lat/lon stored as 2-D grids (AIRS); the 1-D axes are taken from them
     single_file: bool = False        # whole record in ONE small file: download once, read regions locally
+    # Set for variables whose trend is (nearly) the same everywhere on Earth, so a region's trend
+    # says little about that place. Shown to users and used to rank scans.
+    global_note: str = ""
 
     def available_months(self, start: str, end: str) -> list:
         """The months in start..end (YYYY-MM) that this dataset actually covers."""
@@ -324,6 +327,9 @@ VARIABLES: dict[str, Variable] = {
             last_month="2022-02",  # this product's record ends here
             cloud_seconds_per_month=0.25,
             category="Greenhouse gases",
+            global_note=("CO2 is rising by almost the same amount everywhere on Earth, because winds mix it "
+                         "around the planet within about a year. This trend is real, but it is a worldwide "
+                         "trend, not something special about this place."),
         ),
         # ---- more from the same MERRA-2 file as air temperature
         Variable(

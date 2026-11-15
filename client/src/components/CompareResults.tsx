@@ -2,6 +2,7 @@ import { CartesianGrid, ComposedChart, Legend, Line, ResponsiveContainer, Toolti
 import type { AnalyzeResult, CompareItem, CompareResult } from "../api";
 import { slotVar } from "../regions";
 import { trendLevel } from "../trend";
+import { downloadCompare } from "../download";
 
 interface Props {
   result: CompareResult;
@@ -94,6 +95,23 @@ export default function CompareResults({ result, slots }: Props) {
             : `Significant trend in ${sig.length === ok.length ? "all regions" : sig.join(", ")}.`}{" "}
           Fastest change: <strong>{fastest.name}</strong> ({signed(fastest.slope_per_decade)} {units} per decade).
         </p>
+        {sig.length > (result.summary.significant_after_correction ?? sig).length && (
+          <p className="small muted">
+            Testing {ok.length} regions at once makes a lucky result more likely. After allowing for that,{" "}
+            {result.summary.significant_after_correction.length === 0
+              ? "none of them stays clearly significant."
+              : `only ${result.summary.significant_after_correction.join(", ")} ${
+                  result.summary.significant_after_correction.length === 1 ? "stays" : "stay"
+                } clearly significant.`}
+          </p>
+        )}
+      </div>
+
+      <div className="downloads">
+        <span className="small muted">Download CSV:</span>
+        <button type="button" className="secondary small" onClick={() => downloadCompare(result)}>
+          ⤓ Monthly data, all regions
+        </button>
       </div>
 
       <div className="table-scroll compare-table">

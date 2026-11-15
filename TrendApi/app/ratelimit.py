@@ -16,7 +16,7 @@ the Dockerfile does this.
 Settings (environment variables):
   RATE_LIMIT_ENABLED   1 (default) or 0 to turn limiting off
   RATE_LIMIT_<TIER>    override a tier, e.g. RATE_LIMIT_ANALYSIS="15/minute,300/day"
-                       tiers: ANALYSIS, DRIVERS, POLL, DEFAULT
+                       tiers: ANALYSIS, DRIVERS, SCAN, POLL, DEFAULT
 """
 from __future__ import annotations
 
@@ -36,6 +36,8 @@ TIERS = {
     "analysis": ("analyses", "15/minute,300/day"),
     # Cause analysis streams several variables AND calls Claude (costs money per call).
     "drivers": ("cause analyses", "5/minute,50/day"),
+    # A scan streams every variable for one region: up to 15 analyses in one request.
+    "scan": ("variable scans", "3/minute,30/day"),
     # The client polls a running job once a second; allow a few tabs at once.
     "poll": ("progress checks", "240/minute"),
     # Everything else: variables, examples, plans. Cheap.
@@ -45,6 +47,7 @@ TIERS = {
 _ROUTES = [
     ("POST", re.compile(r"^/(analyze|compare)(/jobs)?/?$"), "analysis"),
     ("POST", re.compile(r"^/drivers(/jobs)?/?$"), "drivers"),
+    ("POST", re.compile(r"^/scan/jobs/?$"), "scan"),
     ("GET", re.compile(r"^/jobs/[^/]+/?$"), "poll"),
 ]
 # Never limited: health probes from Azure, and CORS preflights.

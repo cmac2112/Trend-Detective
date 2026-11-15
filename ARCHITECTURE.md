@@ -91,7 +91,9 @@ Trend-Detective/
 │   │   ├── local.py           finds locally stored data that covers a request
 │   │   ├── data.py            NASA login, optional whole-world downloads, date parsing
 │   │   ├── region.py          polygon → one area-weighted value per month
-│   │   ├── stats.py           seasonal removal, t-test, Mann-Kendall, verdict
+│   │   ├── stats.py           seasonal removal, t-test, Mann-Kendall, verdict, years-to-detect
+│   │   ├── trendmap.py        a trend for every grid cell (where is it changing?)
+│   │   ├── scan.py            every variable over one region, ranked (what is changing?)
 │   │   ├── analyze.py         ties it together: plan(), analyze(), compare()
 │   │   ├── cache.py           in-memory result cache
 │   │   ├── drivers.py         cause analysis: correlation, regression, random forest
@@ -119,7 +121,11 @@ Trend-Detective/
             ├── Results.tsx          single-region verdict + stat tiles
             ├── TrendCharts.tsx      raw-values chart + anomaly/trend-line chart
             ├── CompareResults.tsx   2–5 regions side by side
-            └── DriversPanel.tsx     "Why is it changing?" evidence + AI explanation
+            ├── DriversPanel.tsx     "Why is it changing?" evidence + AI explanation
+            ├── ScanResults.tsx      every variable for one region, ranked
+            ├── TrendLegend.tsx      colour key for the per-cell trend map
+            ├── DetectiveQuestions.tsx  "what kind of place? curious about?" → suggested variables
+            └── Tour.tsx             guided demo (the Rondônia story, run live)
 ```
 
 ---
@@ -297,6 +303,45 @@ Why each step matters:
 The output also includes the total change, the confidence interval, a plain-English
 verdict and the data behind every chart. Code: `earthtrends/stats.py`.
 
+### How long until a trend can be detected?
+
+The challenge notes that "sometimes all a trend needs to become significant is a longer
+period". For a trend that isn't significant yet, the app estimates how many years of data
+it would need, using Weatherhead et al. (1998, *J. Geophys. Res.* 103(D14)):
+
+```text
+years needed = [ 3.3 × σ / |trend per year| × √((1 + φ) / (1 − φ)) ] ^ (2/3)
+```
+
+σ is the month-to-month noise left after removing the trend and the seasons, φ is how much
+each month resembles the last. The result is the record length that gives a 90% chance of
+a significant result if the trend and noise stay as they are. Simulations with the app's
+own test detect planted trends 91–93% of the time at that length, so the estimate and the
+test agree. When the dataset reaches further back than the chosen period, the app offers
+a one-click re-run on the longer record.
+
+Example: Lake Mead air temperature, 2015–2024, is not significant (p = 0.67); the app says
+about 29 more years would be needed. Re-run over 2001–2024 and it is significant (p = 0.013).
+
+### Where inside the region? The trend map
+
+A regional average can hide the most interesting answer: one part of a region rising while
+another falls. `earthtrends/trendmap.py` fits the same trend to **every grid cell** inside
+the polygon (vectorised, so thousands of cells take milliseconds) and the map colours each
+cell by its own trend.
+
+- **Same method per cell:** seasonal cycle removed per cell, least-squares slope,
+  autocorrelation-adjusted t-test. A test checks it matches the regional code exactly.
+- **Testing thousands of cells at once:** at p < 0.05, about 1 cell in 20 looks
+  "significant" by pure chance. Cells are only marked significant after a
+  false-discovery-rate correction (Benjamini–Hochberg; Wilks 2016). On pure noise this
+  drops the false alarms to about zero.
+- **Opposite trends are called out:** if some cells rise and others fall significantly, the
+  results say so. Example: Rondônia vegetation greenness, where 1,139 cells fall and 278
+  rise significantly.
+- Mann-Kendall isn't run per cell (it's roughly 1000× slower); the regional verdict still
+  needs both tests. Very large regions are averaged into blocks of at most 2,500 cells.
+
 ---
 
 ## 7. Comparing regions
@@ -318,6 +363,35 @@ flowchart LR
   table. The palette was checked for colour-blind safety.
 - A region that fails (for example ocean for soil moisture) shows its error and doesn't
   stop the rest.
+- **Testing several regions at once** makes a lucky "significant" more likely (about 23%
+  with 5 regions), so the summary also says which regions stay significant after a
+  false-discovery-rate correction.
+- Every region's trend map is drawn on one shared colour scale, so they compare directly.
+
+### Scanning every variable: what is changing here?
+
+Choosing a variable is the challenge's first hurdle. **Scan** (`earthtrends/scan.py`) runs
+all 15 variables over one region and ranks them:
+
+1. Each dataset uses its own record within the chosen period (CO₂ starts in 2015).
+2. Ranked by significance, then by the change per decade divided by the variable's normal
+   month-to-month variation, which makes rainfall and temperature comparable.
+3. Worldwide trends (CO₂) rank after local ones of the same level, and are labelled as such.
+4. With 15 tests, one "significant" result by luck is likely, so each row also says whether
+   it survives a false-discovery-rate correction across the scan.
+5. Variables that can't apply (soil over the ocean, snow in the tropics) are listed with
+   the reason.
+
+Every full result is cached, so opening a variable from the scan is instant.
+
+### Detective questions
+
+Before scanning, students can answer two questions ("What kind of place?" and "What are you
+curious about?"). A fixed table in `client/src/detective.ts` maps the answers to the most
+promising variables, each with a one-line reason (for a rainforest: "Clearing forest for
+farms and cattle makes the land less green"). It's a fixed table rather than an AI call, so
+it is instant, works offline and gives the same answer every time. Matching variables are
+tagged in the scan table.
 
 ---
 
@@ -359,6 +433,10 @@ Example (real data): Rondônia's warming (+0.81 °C/decade) is linked most stron
 **drying soil** (r = −0.67) and **declining vegetation** (MODIS NDVI, r = −0.53). That's
 consistent with deforestation reducing evaporative cooling.
 
+Each driver's correlation is taken at its best lead of 0–3 months. Picking the best of
+four lags would overstate the evidence, so its p-value is Bonferroni-corrected for the
+number of lags tried.
+
 Code: `earthtrends/drivers.py` (statistics) and `earthtrends/narrative.py` (Claude).
 
 ---
@@ -392,12 +470,24 @@ flowchart TD
     APP --> SIDE["Sidebar<br/>region list · dataset · dates"]
     APP --> ONE["Results + TrendCharts<br/>(1 region)"]
     APP --> CMP["CompareResults<br/>(2–5 regions)"]
+    APP --> SCAN["ScanResults<br/>every variable, ranked"]
+    SIDE --> DQ["DetectiveQuestions<br/>suggested variables"]
+    MAP --> TM["Trend map layer<br/>one cell per grid cell"]
+    APP --> TOUR["Tour<br/>guided demo"]
     ONE --> DRV["DriversPanel<br/>Why is it changing?"]
     APP --> API["api.ts<br/>typed calls to TrendApi"]
 ```
 
 - **Map:** Leaflet with OpenStreetMap tiles. Geoman supplies the polygon and rectangle tools.
 - **Charts:** Recharts. There's never a dual axis; every chart has a legend and a data-table view.
+- **Trend map:** grid cells drawn on a canvas layer under the region outlines. Diverging
+  blue → gray → red scale, interpolated in OKLab so equal slope steps look equal. Solid =
+  significant after correction, faded = not. Hover shows a cell's trend and p-value.
+- **CSV downloads** (built in the browser): monthly data, the per-cell trend map, a
+  comparison, or a scan table. They open in Excel or pandas and load into hydrology tools
+  such as CUAHSI HydroShare.
+- **Guided demo:** "Watch a guided demo" runs the Rondônia story live (add region →
+  detective questions → scan → trend map → statistics → causes), highlighting each part.
 - **Light and dark themes** follow the system setting.
 
 ---
@@ -413,8 +503,9 @@ Interactive docs run at `http://127.0.0.1:8000/docs`.
 | GET | `/variables` · `/variables/{key}` | Variables with definitions and what's stored locally |
 | GET | `/examples` · `/examples/{name}` | Demo regions (GeoJSON) |
 | POST | `/plan` | Where would the data come from, and how long would it take? |
-| POST | `/analyze` · `/analyze/jobs` | One region: series + trend statistics |
+| POST | `/analyze` · `/analyze/jobs` | One region: series, trend statistics and per-cell trend map (`include_map`) |
 | POST | `/compare/plan` · `/compare` · `/compare/jobs` | 2–5 regions side by side |
+| POST | `/scan/plan` · `/scan/jobs` | Every variable over one region, ranked |
 | POST | `/drivers` · `/drivers/jobs` | Cause analysis + AI explanation |
 | GET | `/jobs/{id}` | Progress and result of a background job |
 | POST | `/cache/clear` | Empty the result cache (admin token required) |
@@ -440,7 +531,11 @@ Interactive docs run at `http://127.0.0.1:8000/docs`.
 
 | Check | Result |
 |---|---|
-| Automated tests (synthetic data with a planted, known trend) | 23 core + 14 API passing |
+| Automated tests (synthetic data with a planted, known trend) | 33 core + 20 API passing |
+| Per-cell trend test vs the regional test on one cell | Same slope; p-value within 0.03% |
+| Trend map on pure noise (no real trend) | Uncorrected: several "significant" cells; after FDR correction: about none |
+| Opposite trends planted in two halves of a region | Map finds both halves; regional average ~0 |
+| Years-to-detect (Weatherhead) vs simulation with the app's own test | 91–93% detection at the predicted length (90% expected) |
 | OCO-2 CO₂ in three very different regions | +24.7 to +25.0 ppm/decade everywhere (a well-mixed gas), ~407 ppm average, as in global records |
 | AIRS satellite vs MERRA-2 model temperature, 2003–2024 | Month-to-month r = 0.88–0.997 in all three demo regions |
 | OMI/MLS ozone values | Typical 20–40 Dobson units, as expected for the lower atmosphere |
@@ -466,6 +561,9 @@ Interactive docs run at `http://127.0.0.1:8000/docs`.
 
 - More data: sea ice (NSIDC), aerosols and air quality (MERRA-2 aerosols, OMI NO₂), groundwater (GRACE).
 - MODIS terrain or land-cover context when analyzing a region.
+- An upper-atmosphere variable (MERRA-2 temperature at 250 hPa) for the "levels of the
+  atmosphere" angle.
+- Share downloads between the six GLDAS variables in a scan (they come from the same files).
 - Cause analysis per region in comparison mode.
 - Deployment: hosting near NASA's cloud (AWS
   us-west-2) for faster streaming.

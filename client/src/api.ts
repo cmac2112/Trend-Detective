@@ -12,6 +12,8 @@ export interface VariableInfo {
   category: string;
   source: string;
   related: string[];
+  /** Non-empty when the variable's trend is about the same everywhere on Earth (e.g. CO2). */
+  global_note: string;
   data_starts: string;
   /** Last month of a discontinued record, or null if the dataset is still updated. */
   data_ends: string | null;
@@ -44,7 +46,7 @@ export interface Job {
   total: number;
   progress: number | null;
   error: string | null;
-  result: AnalyzeResult | CompareResult | DriversResult | null;
+  result: AnalyzeResult | CompareResult | DriversResult | ScanResult | null;
 }
 
 export interface SeriesPoint {
@@ -53,8 +55,36 @@ export interface SeriesPoint {
   anomaly: number;
 }
 
+/** Per-grid-cell trend inside the region. Grids are indexed [lat][lon]; null = outside the
+ *  polygon or too little data. */
+export interface TrendMap {
+  units: string;
+  lat: number[];
+  lon: number[];
+  resolution_deg: [number, number];
+  coarsened_by: number;
+  slope_per_decade: (number | null)[][];
+  p_value: (number | null)[][];
+  /** Significant after controlling the false discovery rate across cells. */
+  significant: boolean[][];
+  method: string;
+  summary: {
+    cells: number;
+    cells_with_trend: number;
+    share_increasing: number | null;
+    significant_up: number;
+    significant_down: number;
+    significant_uncorrected: number;
+    mixed: boolean;
+    slope_min: number | null;
+    slope_max: number | null;
+    color_limit: number;
+    description: string;
+  };
+}
+
 export interface AnalyzeResult {
-  variable: { key: string; name: string; units: string; definition: string; source: string };
+  variable: { key: string; name: string; units: string; definition: string; source: string; global_note?: string };
   region: { grid_cells: number; cells_with_data: number; grid_resolution_deg: number[]; bounds: number[] };
   data_source: { type: DataSource | "provided"; description: string; cached?: boolean };
   stats: {
@@ -80,10 +110,55 @@ export interface AnalyzeResult {
     mann_kendall: { trend: string; p_value: number; tau: number; sen_slope_per_decade: number };
     seasonal_mann_kendall: { trend: string; p_value: number; sen_slope_per_decade: number };
     climatology: Record<string, number>;
+    /** Weatherhead et al. (1998): years of data needed to detect a trend this size. */
+    detection: { years_needed: number | null; more_years: number | null; method: string };
     significant: boolean;
+    /** Compare only: still significant after correcting for testing several regions. */
+    significant_after_correction?: boolean;
     verdict: string;
   };
   series?: SeriesPoint[];
+  trend_map?: TrendMap | { error: string };
+}
+
+export const hasMap = (m: AnalyzeResult["trend_map"]): m is TrendMap => !!m && !("error" in m);
+
+export interface ScanItem {
+  key: string;
+  name: string;
+  category: string;
+  units: string;
+  definition: string;
+  start: string;
+  end: string;
+  n_months: number;
+  level: "significant" | "possible" | "none";
+  slope_per_decade: number;
+  ci95_per_decade: [number | null, number | null];
+  percent_of_mean_per_decade: number | null;
+  change_in_sd_per_decade: number | null;
+  p_value: number;
+  mk_p_value: number;
+  passes_fdr: boolean;
+  mixed_inside_region: boolean;
+  global_note: string;
+  data_source: DataSource | "provided";
+  rank: number;
+}
+
+export interface ScanResult {
+  start: string | null;
+  end: string | null;
+  variables: ScanItem[];
+  skipped: Record<string, string>;
+  summary: { analyzed: number; significant: number; passes_fdr: number; strongest: string | null; description: string };
+}
+
+export interface ScanPlan {
+  source: "local" | "cloud";
+  estimated_seconds: number;
+  variables: (Plan & { key: string })[];
+  skipped: Record<string, string>;
 }
 
 /** One region inside a comparison: an analysis result without `variable`, or an error. */
@@ -99,6 +174,7 @@ export interface CompareResult {
   summary: {
     analyzed: number;
     significant: string[];
+    significant_after_correction: string[];
     fastest_change: { name: string; slope_per_decade: number };
   };
 }
@@ -117,7 +193,8 @@ export interface DriverEvidence {
   rank: number;
   evidence: "strong" | "moderate" | "weak";
   trend: { slope_per_decade: number; p_value: number; significant: boolean; verdict: string };
-  correlation: { r: number; lag_months: number; p_value: number; n: number };
+  /** p_value is corrected for the number of lags tried; p_value_single_lag is the raw one. */
+  correlation: { r: number; lag_months: number; p_value: number; p_value_single_lag: number; lags_tried: number; n: number };
   regression: {
     coef_per_unit: number | null;
     standardized_coef: number | null;
@@ -227,6 +304,11 @@ export const api = {
 
   driversJob: (body: AnalyzeBody & { region_name?: string }) =>
     request<{ job: Job; plan: Plan }>("/drivers/jobs", { method: "POST", body: JSON.stringify(body) }),
+
+  scanPlan: (body: Omit<AnalyzeBody, "variable">) =>
+    request<ScanPlan>("/scan/plan", { method: "POST", body: JSON.stringify(body) }),
+  scanJob: (body: Omit<AnalyzeBody, "variable">) =>
+    request<{ job: Job; plan: ScanPlan }>("/scan/jobs", { method: "POST", body: JSON.stringify(body) }),
 
   comparePlan: (body: CompareBody) =>
     request<ComparePlan>("/compare/plan", { method: "POST", body: JSON.stringify(body) }),

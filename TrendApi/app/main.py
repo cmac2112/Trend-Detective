@@ -59,6 +59,7 @@ from pydantic import BaseModel, Field  # noqa: E402
 
 from earthtrends import analyze as engine  # noqa: E402
 from earthtrends import cache, catalog, data, drivers, local, narrative, region  # noqa: E402
+from earthtrends import scan as scanner  # noqa: E402
 
 from . import jobs  # noqa: E402
 from .ratelimit import RateLimitMiddleware  # noqa: E402
@@ -106,6 +107,7 @@ class AnalyzeRequest(BaseModel):
     source: Literal["auto", "local", "cloud"] = Field(
         "auto", description="auto = local copy if it covers the request, otherwise NASA cloud")
     include_series: bool = Field(True, description="Include the monthly data points in the response")
+    include_map: bool = Field(True, description="Include the per-grid-cell trend map in the response")
 
 
 class NamedRegion(BaseModel):
@@ -121,6 +123,15 @@ class CompareRequest(BaseModel):
     end: str | None = Field(None, pattern=MONTH, examples=["2024-12"])
     source: Literal["auto", "local", "cloud"] = "auto"
     include_series: bool = True
+    include_map: bool = True
+
+
+class ScanRequest(BaseModel):
+    region: dict[str, Any] = Field(..., description="GeoJSON Polygon/MultiPolygon, Feature, or FeatureCollection")
+    start: str | None = Field(None, pattern=MONTH, examples=["2001-01"],
+                              description="First month; clipped to each dataset's record")
+    end: str | None = Field(None, pattern=MONTH, examples=["2024-12"])
+    source: Literal["auto", "local", "cloud"] = "auto"
 
 
 class DriversRequest(AnalyzeRequest):
@@ -151,6 +162,7 @@ def _variable_info(var: catalog.Variable) -> dict:
         "category": var.category,
         "source": f"{var.collection} v{var.version}",
         "related": list(var.related),
+        "global_note": var.global_note,
         "data_starts": var.first_month,
         "data_ends": var.last_month,
         "local_global": None,
@@ -203,6 +215,8 @@ def _run(req: AnalyzeRequest, progress=None) -> dict:
                             source=req.source, progress=progress)
     if not req.include_series:
         result.pop("series", None)
+    if not req.include_map:
+        result.pop("trend_map", None)
     return _clean(result)
 
 
@@ -329,9 +343,11 @@ def _compare_plan(req: CompareRequest, regions: list[dict]) -> dict:
 def _run_compare(req: CompareRequest, regions: list[dict], progress=None) -> dict:
     result = engine.compare(req.variable, regions, start=req.start, end=req.end,
                             source=req.source, progress=progress)
-    if not req.include_series:
-        for r in result["regions"]:
+    for r in result["regions"]:
+        if not req.include_series:
             r.pop("series", None)
+        if not req.include_map:
+            r.pop("trend_map", None)
     return _clean(result)
 
 
@@ -394,6 +410,51 @@ def explain_drivers_job(req: DriversRequest):
     p = _plan(req)
     job = _submit(req.variable, req.start, req.end,
                       work=lambda progress, say: _run_drivers(req, progress, say), on_error=_error_message)
+    return {"job": job.to_dict(), "plan": p}
+
+
+def _validate_scan(req: ScanRequest) -> None:
+    if req.start and req.end and req.start > req.end:
+        raise HTTPException(422, "start must be before end")
+    latest = f"{pd.Timestamp.now():%Y-%m}"
+    if req.end and req.end > latest:
+        raise HTTPException(422, f"end can't be in the future (latest is {latest})")
+    try:
+        region.load_polygon(req.region)
+    except Exception as e:
+        raise HTTPException(422, f"Invalid region GeoJSON: {e}")
+
+
+def _scan_plan(req: ScanRequest) -> dict:
+    try:
+        p = scanner.scan_plan(req.region, req.start, req.end, source=req.source)
+    except data.DataError as e:
+        raise HTTPException(409, str(e))
+    if not p["variables"]:
+        raise HTTPException(422, "No variable has 2 or more years of data in this period.")
+    if p["source"] == "cloud" and not data.have_credentials():
+        raise HTTPException(503, "This needs NASA's cloud, but the server has no Earthdata credentials.")
+    return p
+
+
+@app.post("/scan/plan")
+def scan_plan(req: ScanRequest):
+    """Where each variable's data would come from for a scan, and the total estimated time."""
+    _validate_scan(req)
+    return _scan_plan(req)
+
+
+@app.post("/scan/jobs", status_code=202)
+def scan_job(req: ScanRequest):
+    """Analyze every variable over one region and rank them by how strongly they're trending.
+    Poll GET /jobs/{id}. Each variable's full result is cached, so POST /analyze with the
+    item's `key`, `start` and `end` afterwards is instant."""
+    _validate_scan(req)
+    p = _scan_plan(req)
+    job = _submit("scan", req.start, req.end,
+                  work=lambda progress: _clean(scanner.scan(req.region, req.start, req.end,
+                                                            source=req.source, progress=progress)),
+                  on_error=_error_message)
     return {"job": job.to_dict(), "plan": p}
 
 

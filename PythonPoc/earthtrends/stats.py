@@ -7,7 +7,9 @@ Steps:
    fewer independent data points than months). Uses the effective-sample-size method
    of Santer et al. (2000).
 4. Mann-Kendall trend tests with Sen's slope (robust, no normality assumption).
-5. Plain-English verdict.
+5. How many years of data a trend this size needs before it can be detected
+   (Weatherhead et al. 1998), so a "not significant yet" result says how long to wait.
+6. Plain-English verdict.
 """
 from __future__ import annotations
 
@@ -28,6 +30,20 @@ def deseasonalize(series: pd.Series) -> tuple[pd.Series, pd.Series]:
 
 def decimal_years(index: pd.DatetimeIndex) -> np.ndarray:
     return (index.year + (index.month - 0.5) / 12).to_numpy(dtype=float)
+
+
+def years_to_detect(slope_per_year: float, noise_sd: float, phi: float) -> float | None:
+    """Years of monthly data needed to detect a linear trend with 90% probability at the 5%
+    level (Weatherhead et al. 1998, J. Geophys. Res. 103(D14), eq. 3):
+
+        n* = [ (3.3 * sigma_N / |omega|) * sqrt((1 + phi) / (1 - phi)) ] ^ (2/3)
+
+    sigma_N: monthly noise (residual) standard deviation, omega: trend per year,
+    phi: lag-1 autocorrelation of the noise. Assumes the trend and noise stay as they are."""
+    if not (slope_per_year and noise_sd > 0) or not np.isfinite(slope_per_year):
+        return None
+    phi = min(max(phi, 0.0), 0.95)
+    return float((3.3 * noise_sd / abs(slope_per_year) * np.sqrt((1 + phi) / (1 - phi))) ** (2 / 3))
 
 
 def trend_stats(series: pd.Series, units: str = "", percent: bool = True) -> dict:
@@ -61,6 +77,7 @@ def trend_stats(series: pd.Series, units: str = "", percent: bool = True) -> dic
     mk_seasonal = mk.seasonal_test(series.to_numpy(dtype=float), period=12)
 
     years = t[-1] - t[0]
+    needed = years_to_detect(float(fit.slope), float(np.std(resid, ddof=2)), r1)
     mean = float(series.mean())
     slope_dec = fit.slope * 10
     result = {
@@ -95,6 +112,12 @@ def trend_stats(series: pd.Series, units: str = "", percent: bool = True) -> dic
             "sen_slope_per_decade": float(mk_seasonal.slope) * 10,  # per year -> per decade
         },
         "climatology": {int(m): float(v) for m, v in clim.items()},
+        "detection": {
+            "years_needed": needed,
+            "more_years": None if needed is None else max(0.0, needed - years),
+            "method": "Weatherhead et al. (1998): 90% chance of detecting the trend at the 5% level, "
+                      "if the trend and the noise stay as they are now.",
+        },
     }
     result["significant"] = bool(p_adj < ALPHA and mk_hr.p < ALPHA)
     result["verdict"] = verdict(result)
@@ -119,8 +142,21 @@ def verdict(r: dict) -> str:
     if t_sig or mk_sig:
         return (f"Possible trend: {direction} by about {size}{pct_txt} over {period}, but the "
                 f"tests disagree (t-test p = {lin['p_value']:.3f}, Mann-Kendall p = "
-                f"{mkr['p_value']:.3f}). Treat it as borderline; a longer record may settle it.")
+                f"{mkr['p_value']:.3f}). Treat it as borderline. {_wait_text(r)}")
     return (f"No significant trend: the data drift {direction} by about {size}{pct_txt} over "
             f"{period}, but that could easily be natural year-to-year variation "
             f"(t-test p = {lin['p_value']:.3f}, Mann-Kendall p = {mkr['p_value']:.3f}). "
-            f"A longer record might reveal a trend.")
+            f"{_wait_text(r)}")
+
+
+def _wait_text(r: dict) -> str:
+    """How much longer a record would need to be, for a trend that isn't significant yet."""
+    more = r.get("detection", {}).get("more_years")
+    if more is None:
+        return "A longer record might reveal a trend."
+    if more > 100:
+        return "At this small a rate it would take over a century of data to detect, so in practice there is no trend."
+    if more < 1:
+        return "A trend this size is usually detectable with a record this long, so it may simply be weaker than it looks."
+    return (f"If it carries on at this rate, about {more:.0f} more years of data would likely make it "
+            f"significant.")
